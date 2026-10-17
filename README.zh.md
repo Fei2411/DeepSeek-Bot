@@ -32,8 +32,8 @@ DeepSeek Bot（简称 DS Bot）是一个基于 [DeepSeek Harness](https://github
 需要 Node.js `22.19` 以上和 pnpm。
 
 ```sh
-npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add ds-bot
-npx @deepseek-ai/dsh@0.2.0-rc.2 web
+npx @deepseek-ai/dsh@0.2.1-rc.2 plugin --profile web add ds-bot
+npx @deepseek-ai/dsh@0.2.1-rc.2 web
 ```
 
 **Docker（NAS、Linux 服务器）**

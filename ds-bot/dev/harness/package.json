@@ -3,7 +3,7 @@
   "private": true,
   "description": "The DeepSeek Harness packages that the unit tests and the linter run against. Install with npm run harness in ds-bot/.",
   "dependencies": {
-    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "@deepseek-ai/dsh": "0.2.1-rc.2",
     "jsdom": "29.1.1",
     "oxlint": "1.76.0"
   }

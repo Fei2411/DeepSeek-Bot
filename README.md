@@ -32,8 +32,8 @@ If npm is not reachable, in step 2 you can also enter the full path of `ds-bot-0
 Needs Node.js `22.19` or later, and pnpm.
 
 ```sh
-npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add ds-bot
-npx @deepseek-ai/dsh@0.2.0-rc.2 web
+npx @deepseek-ai/dsh@0.2.1-rc.2 plugin --profile web add ds-bot
+npx @deepseek-ai/dsh@0.2.1-rc.2 web
 ```
 
 **Docker (NAS, Linux server)**

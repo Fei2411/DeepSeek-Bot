@@ -36,10 +36,10 @@ dsh: disabling profile plugin row "bot": its declared peer dependencies cannot b
 
 1. 退出 DSH。
 2. 打开 profile 文件夹里的 `cordis.patch.yml`，找 `id: bot` 但没有 `name: ds-bot` 的一行，删掉这一行。改之前先备份这个文件。
-3. 确认同一文件夹的 `package.json` 在 `dependencies` 里有 `ds-bot`。没有的话，重新添加 DS Bot：`npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add ds-bot`。
+3. 确认同一文件夹的 `package.json` 在 `dependencies` 里有 `ds-bot`。没有的话，重新添加 DS Bot：`npx @deepseek-ai/dsh@0.2.1-rc.2 plugin --profile web add ds-bot`。
 4. 重新启动 DSH。
 
-想知道这一行来自哪里，可以运行 `npx @deepseek-ai/dsh@0.2.0-rc.2 --profile web --dump-config`。它会列出每一行插件配置，以及提供它的文件。如果要报告这个问题，只复制 `id: bot` 的那几行和文件名，不要带上 key 或你不想公开的路径。
+想知道这一行来自哪里，可以运行 `npx @deepseek-ai/dsh@0.2.1-rc.2 --profile web --dump-config`。它会列出每一行插件配置，以及提供它的文件。如果要报告这个问题，只复制 `id: bot` 的那几行和文件名，不要带上 key 或你不想公开的路径。
 
 删掉整个 profile 文件夹也能解决，但会一并删掉这个 profile 的其他插件和设置（比如模型）。Bot 团队数据在 `~/.dsh/bot/`，两种做法都不会影响它。
 
@@ -73,6 +73,6 @@ Error: configured web provider "auto" is not registered
 
 3. 重新启动 DSH。
 
-想确认结果，可以运行 `npx @deepseek-ai/dsh@0.2.0-rc.2 --profile web --dump-config`，看 `web` 那一行。另外，有的插件会在 DSH 运行时设置搜索 provider，时间在 profile patch 之后。以后关掉这类插件时，也要再检查一下这个设置。
+想确认结果，可以运行 `npx @deepseek-ai/dsh@0.2.1-rc.2 --profile web --dump-config`，看 `web` 那一行。另外，有的插件会在 DSH 运行时设置搜索 provider，时间在 profile patch 之后。以后关掉这类插件时，也要再检查一下这个设置。
 
 另见插件 README 的 [Web search](../ds-bot/README.md#web-search) 一节和 issue [#128](https://github.com/Fei2411/DeepSeek-Bot/issues/128)。
