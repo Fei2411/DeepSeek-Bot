@@ -114,12 +114,13 @@ function MessageTools({ text, name, sessionId, react, actions }) {
       item(t('Copy'), CopyIcon, copy), item(t('Download'), DownloadIcon, download)), document.body) : null)
 }
 
-// Few readers go through a whole chain of thought, so the row opens on its last lines;
-// the box scrolls for the rest. It stays at the end as later steps add reasoning,
-// unless the reader has scrolled up.
+// The row starts closed. Few readers go through a whole chain of thought, so when opened
+// it shows the last lines and the box scrolls for the rest. It stays at the end as later
+// steps add reasoning, unless the reader has scrolled up.
 function ThinkingRow({ text }) {
   const box = useRef(null)
   const atEnd = useRef(true)
+  const [open, setOpen] = useState(false)
   const [fade, setFade] = useState(undefined)
   const measure = () => {
     const el = box.current
@@ -127,14 +128,20 @@ function ThinkingRow({ text }) {
     const above = el.scrollTop > 0
     setFade(above && !atEnd.current ? 'both' : above ? 'top' : !atEnd.current ? 'bottom' : undefined)
   }
+  const toggle = event => {
+    const next = event.currentTarget.open
+    if (next) atEnd.current = true
+    setOpen(next)
+  }
   useLayoutEffect(() => {
+    if (!open) return
     const el = box.current
     if (atEnd.current) el.scrollTop = el.scrollHeight
     measure()
-  }, [text])
+  }, [text, open])
   const title = t('Thought it through')
-  return h('div', { className: 'bt-think' },
-    h('div', { className: 'bt-think-title' }, title),
+  return h('details', { className: 'bt-think', onToggle: toggle },
+    h('summary', null, title),
     h('div', { ref: box, className: 'bt-think-text', role: 'region', 'aria-label': title, tabIndex: 0, 'data-fade': fade, onScroll: measure }, text))
 }
 

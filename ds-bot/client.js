@@ -2646,6 +2646,8 @@ body[data-ds-dark-theme] .bt-theme-chip i{background:var(--da)}
 `;
 var CONVERSATION_CSS = `
 .bt-think{font-size:13px;line-height:18px;color:var(--bt-ink-2);margin:2px 0 4px;max-width:min(560px,78%)}
+.bt-think summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:6px}
+.bt-think summary::-webkit-details-marker{display:none}
 /* Five lines of the 18px line height; the rest scrolls inside the box. */
 .bt-think-text{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:6px;padding-left:10px;border-left:2px solid var(--bt-line-2);max-height:90px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;outline:none}
 .bt-think-text:focus-visible{border-left-color:var(--bt-ink-2)}
@@ -4050,6 +4052,7 @@ function MessageTools({ text, name, sessionId, react, actions }) {
 function ThinkingRow({ text }) {
   const box = (0, import_react7.useRef)(null);
   const atEnd = (0, import_react7.useRef)(true);
+  const [open, setOpen] = (0, import_react7.useState)(false);
   const [fade, setFade] = (0, import_react7.useState)(void 0);
   const measure = () => {
     const el = box.current;
@@ -4057,16 +4060,22 @@ function ThinkingRow({ text }) {
     const above = el.scrollTop > 0;
     setFade(above && !atEnd.current ? "both" : above ? "top" : !atEnd.current ? "bottom" : void 0);
   };
+  const toggle = (event) => {
+    const next = event.currentTarget.open;
+    if (next) atEnd.current = true;
+    setOpen(next);
+  };
   (0, import_react7.useLayoutEffect)(() => {
+    if (!open) return;
     const el = box.current;
     if (atEnd.current) el.scrollTop = el.scrollHeight;
     measure();
-  }, [text]);
+  }, [text, open]);
   const title = t("Thought it through");
   return (0, import_react7.createElement)(
-    "div",
-    { className: "bt-think" },
-    (0, import_react7.createElement)("div", { className: "bt-think-title" }, title),
+    "details",
+    { className: "bt-think", onToggle: toggle },
+    (0, import_react7.createElement)("summary", null, title),
     (0, import_react7.createElement)("div", { ref: box, className: "bt-think-text", role: "region", "aria-label": title, tabIndex: 0, "data-fade": fade, onScroll: measure }, text)
   );
 }
