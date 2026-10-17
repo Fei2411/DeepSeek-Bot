@@ -33,6 +33,8 @@
 //   删掉|remove N, 改|edit N: X change entries, anything else gets the entry count.
 // Commands in a group:
 //   把X拉进群 · 把X踢出群 · 群名改成X · 讨论 (admin @all) · 私聊聊了啥 (repeats the briefing)
+//   记住[@话题] 事实 (the admin saves to the group memory) · 自己记住 / 团队记住 事实 (own / team)
+//   忘掉 事实 (the admin) · 回忆 [词] (every member)
 //   查私聊 关键词 (read_own_chat) · 长文 N · 上下文里有 词 · 撑爆 · 报错 [名] (that member's call, or every member's, fails with 401)
 //   提权 (members other than the admin run a shell command that asks for full access)
 //   写成文字 (members write their tool call as text instead of making it; also in a Bot's own chat)
@@ -138,8 +140,8 @@ function decide(body) {
 
   // The memory panel: a prose summary of the entries it lists, and "ask or update".
   if (system.includes('You write the memory summary')) return [text(memorySummary(textOf(last?.content)))]
-  if (system.includes('You keep the memory of one Bot')) return [text(JSON.stringify(memoryAsk(textOf(last?.content))))]
-  if (system.includes('You keep the long-term memory of one Bot')) return [text(JSON.stringify(memoryReview(textOf(last?.content))))]
+  if (/You keep the memory of one (Bot|group chat)/.test(system)) return [text(JSON.stringify(memoryAsk(textOf(last?.content))))]
+  if (/You keep the long-term memory of one (Bot|group chat)/.test(system)) return [text(JSON.stringify(memoryReview(textOf(last?.content))))]
 
   const kind = isSummary(body)
   if (kind === 'checkpoint') {
@@ -350,6 +352,13 @@ function decide(body) {
       const earlier = messages.slice(0, -1).map(m => textOf(m.content)).join('\n')
       return [text(earlier.includes(ask[1]) ? `上下文里有「${ask[1]}」。` : `上下文里没有「${ask[1]}」。`)]
     }
+    // Group memory: the admin saves, so a round of members does not save it twice.
+    if ((ask = /^User: (团队|自己)?记住(?:@(\S+))?\s*[:：]?\s*(.+)$/.exec(userLine)) && tools.has('remember')) {
+      if (!leads) return [text('[PASS]')]
+      return [tool('remember', { text: ask[3].trim(), ...(ask[2] ? { topic: ask[2] } : {}), ...(ask[1] ? { scope: ask[1] === '团队' ? 'team' : 'own' } : {}) })]
+    }
+    if ((ask = /^User: 忘掉\s*[:：]?\s*(.+)$/.exec(userLine)) && tools.has('forget')) return leads ? [tool('forget', { entry: ask[1].trim() })] : [text('[PASS]')]
+    if ((ask = /^User: 回忆(?:\s+(.+))?$/.exec(userLine)) && tools.has('recall')) return [tool('recall', ask[1] ? { query: ask[1].trim() } : {})]
     // Group Sessions: the frozen brief is in the Session's first message, the lookup a tool.
     if ((ask = /查能力\s*(\S*)/.exec(userLine))) return [text(capabilityReport(me, tools, messages, ask[1]))]
     if ((ask = /查私聊\s*(\S*)/.exec(userLine))) return [tool('read_own_chat', ask[1] ? { query: ask[1] } : {})]
@@ -483,7 +492,8 @@ function decide(body) {
 
 // The memory panel's summary: headed paragraphs that restate the listed entries.
 function memorySummary(request) {
-  const name = /Here is everything (.+?) remembers/.exec(request)?.[1] ?? 'Bot'
+  const asked = /Here is everything (?:the group chat "(.+?)"|(.+?)) remembers/.exec(request)
+  const name = asked?.[1] ?? asked?.[2] ?? 'Bot'
   const zh = /Write the summary in [^,]*Chinese/.test(request)
   const [own = [], team = []] = request.split(/^## .*$/m).slice(1, 3).map(part => part.split('\n')
     .filter(line => line.startsWith('- ')).map(line => line.slice(2).replace(/^\[\[[^\]]+\]\]\s*/, '').replace(/[。.]$/u, '')))

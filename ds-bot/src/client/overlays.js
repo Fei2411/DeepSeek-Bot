@@ -36,7 +36,15 @@ export function Overlays({ useRoster, useUi, useSessions, useSessionStatus, useA
   }, [ui.details, ui.view, ui.renaming, ui.tab])
   const pane = open ?? kept
   const [settings, settingsLeaving] = useLinger(ui.settings, DIALOG_EXIT_MS)
-  const [memory, memoryLeaving] = useLinger(ui.memory && roster.byId[ui.memory] ? ui.memory : null, DIALOG_EXIT_MS)
+  // The memory dialog shows a Bot's memory or a group chat's.
+  const memoryOwner = (id) => {
+    const bot = roster.byId[id]
+    if (bot) return { id: bot.id, name: bot.name }
+    const room = roster.roomsById[id]
+    return room ? { id: room.id, name: room.name, group: true } : null
+  }
+  const [memory, memoryLeaving] = useLinger(ui.memory && memoryOwner(ui.memory) ? ui.memory : null, DIALOG_EXIT_MS)
+  const owner = memory ? memoryOwner(memory) : null
   const [menu, menuLeaving] = useLinger(ui.menu, MENU_EXIT_MS)
   return h(Fragment, null,
     pane ? createPortal(h(BotPanel, { pane, leaving: open === null, roster, actions, useSessions, useSessionStatus, useActivity, useWork, useBrowserTabs, useBrowserPages }), document.body) : null,
@@ -46,5 +54,5 @@ export function Overlays({ useRoster, useUi, useSessions, useSessionStatus, useA
     ui.voice ? createPortal(h(VoiceMode, { key: ui.voice, sessionId: ui.voice, roster, actions, useSessions, useSessionStatus }), document.body) : null,
     menu ? createPortal(h(ContextMenu, { key: `${menu.kind ?? ''}:${menu.id}:${menu.x}:${menu.y}`, menu, roster, actions, leaving: menuLeaving }), document.body) : null,
     settings ? createPortal(h(SettingsDialog, { page: settings.page, id: settings.id, roster, actions, useUpdate, leaving: settingsLeaving }), document.body) : null,
-    memory && roster.byId[memory] ? createPortal(h(MemoryDialog, { key: memory, bot: roster.byId[memory], actions, leaving: memoryLeaving }), document.body) : null)
+    owner ? createPortal(h(MemoryDialog, { key: owner.id, owner, actions, leaving: memoryLeaving }), document.body) : null)
 }

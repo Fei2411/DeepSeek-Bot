@@ -70,9 +70,9 @@ export function HeaderPill({ sessionId, useRoster, useSessions, useSessionStatus
   const detailsOpen = useUi(state => state.details === sessionId)
   const name = bot?.name ?? room?.name ?? ''
   const useNews = useMemoryNews ?? noNews
-  const memoryIds = bot ? [bot.id] : room?.members ?? []
+  const memoryIds = bot ? [bot.id] : room ? [room.id, ...room.members] : []
   const notice = useMemoryNotice(memoryIds, useNews)
-  // While the notice shows, the pill opens the memory of the Bot that changed.
+  // While the notice shows, the pill opens the memory that changed: a Bot's, or the group's.
   const changed = useNews(map => latestMemoryChange(map, memoryIds))
   // The composer placeholder is not localizable per Session, so CSS reads it from here.
   useEffect(() => {

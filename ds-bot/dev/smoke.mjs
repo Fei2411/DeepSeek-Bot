@@ -234,6 +234,27 @@ await step('Chief sets the group notice', () => send(chief().id, '改群 研发�
 
 await step('Chief reads the group', () => send(chief().id, '看群 研发群'), (_value, calls) => expect(saidText(calls, /^群里最近/), 'no read_group_chat answer'))
 
+// Group memory: what the group keeps stays in the group.
+const groupFact = '研发群的产物放在 out 目录'
+const memoryFile = (...path) => {
+  try { return readFileSync(join(HOME, 'bot', 'memory', ...path, 'MEMORY.md'), 'utf8') } catch { return '' }
+}
+await step('the group keeps what the user asks it to remember, in the group memory only', () => send(roomNamed('研发群').id, `记住 ${groupFact}`), () => {
+  const room = roomNamed('研发群')
+  const elsewhere = [['team'], ...room.members.map(id => ['bots', id])].filter(path => memoryFile(...path).includes(groupFact))
+  return expect(memoryFile('groups', room.id).includes(groupFact), 'not in the group memory')
+    ?? expect(elsewhere.length === 0, `also in ${elsewhere.map(path => path.join('/')).join(', ')}`)
+})
+await step('the group memory panel shows it', () => api('memory-view', { roomId: roomNamed('研发群').id }), view => expect(view.entries.some(entry => entry.scope === 'group' && entry.text === groupFact), 'not in the panel'))
+await step('members recall it in the group', () => send(roomNamed('研发群').id, '回忆 out'), (_value, calls) => expect(saidText(calls, new RegExp(`记忆里有：[\\s\\S]*\\[group · MEMORY\\.md\\] ${groupFact}`)), 'no member found it'))
+await step('a member\'s own chat does not read it', () => send(botNamed('Writer').id, '回忆 out'), (_value, calls) => expect(saidText(calls, /记忆里有：\nNothing in your memory and the team memory mentions "out"/), 'Writer\'s own chat found it'))
+await step('a Bot outside the group does not read it', async () => {
+  const outsider = await api('create-bot', { name: 'Outsider', role: 'Tester', instructions: 'Test.' })
+  await settle()
+  return send(outsider.id, '回忆 out')
+}, (_value, calls) => expect(saidText(calls, /记忆里有：\nNothing in your memory and the team memory mentions "out"/), 'Outsider found it'))
+await step('delete Outsider', () => api('delete-bot', { id: botNamed('Outsider').id }), () => expect(botNamed('Outsider') === undefined, 'Outsider still there'))
+
 for (const round of [1, 2, 3]) {
   await step(`Writer writes long reply ${round}`, () => send(botNamed('Writer').id, `长文 30 第${round}篇`), round < 3 ? undefined : () => {
     const writer = botNamed('Writer')
@@ -327,7 +348,10 @@ await step('duplicate Coder', () => api('duplicate-bot', { id: botNamed('Coder')
 
 await step('set prefs', () => api('set-prefs', { theme: 'dark', accent: '#336699' }), () => expect(state().prefs.theme === 'dark' && state().prefs.accent === '#336699', 'prefs not saved'))
 
-await step('delete the group', () => api('delete-room', { id: roomNamed('研发群').id }), () => expect(Object.keys(state().rooms).length === 0, 'group still there'))
+const devRoomId = roomNamed('研发群')?.id
+await step('delete the group', () => api('delete-room', { id: devRoomId }), () => expect(Object.keys(state().rooms).length === 0, 'group still there')
+  ?? expect(memoryFile('groups', devRoomId) === '', 'the group memory is still in place')
+  ?? expect(readdirSync(join(HOME, 'bot', 'memory', 'archive')).some(entry => entry.startsWith(`group-${devRoomId}`)), 'the group memory is not in the archive'))
 
 await step('delete the copy', async () => {
   const copy = Object.values(state().bots).find(bot => bot.name !== 'Coder' && bot.name.startsWith('Coder'))

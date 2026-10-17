@@ -621,8 +621,12 @@ var ZH = {
   "The summary could not be written: {reason}": "摘要没能生成：{reason}",
   "{name} has not saved anything yet": "{name} 还没有记住任何内容",
   "Bots keep lasting preferences, decisions, and what you ask them to remember. Tell {name} below, or in its chat.": "Bot 会记住长期的偏好、做过的决定，以及你让它记住的事。可以在下面告诉 {name}，也可以在对话里说。",
+  "Nothing is saved for this group yet": "这个群还没有记住任何内容",
+  "A group keeps the decisions, rules, and facts its work needs, for its members to read here. Tell it below, or in the group.": "群会记住工作需要的决定、规则和事实，只有群成员在这个群里会读。可以在下面告诉它，也可以在群里说。",
   "Team memory": "团队记忆",
   "Every Bot reads it": "所有 Bot 都会读",
+  "Group memory": "群记忆",
+  "Only its members read it": "只有群成员会读",
   "MEMORY.md, which every conversation reads": "MEMORY.md，每次对话都会读",
   "{used} of {limit} characters": "{used} / {limit} 字符",
   "by you": "由你添加",
@@ -947,6 +951,8 @@ var HOST_ZH = {
   "A group chat needs at least two Bots": "群聊至少要两个 Bot",
   "The admin must be a member of the group": "管理员必须是群成员",
   "Unknown group chat": "找不到这个群聊",
+  "No Bot is left in this group chat": "这个群聊里已经没有 Bot 了",
+  "That group chat has been deleted": "这个群聊已经删除了",
   "Hand the admin role to another member instead of leaving the group without one": "请把管理员交给其他成员，不要让群聊没有管理员",
   "Hand the admin role to another member before leaving the group": "离开群聊前，请先把管理员交给其他成员",
   "The team needs at least one Main Bot": "团队至少要有一个主 Bot",
@@ -1312,6 +1318,7 @@ function countCards(state, sessionId, callIds, delta) {
 
 // src/client/team-actions.js
 function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards, turnClock }) {
+  const memoryOf = (id) => roster.getSnapshot().roomsById[id] ? { roomId: id } : { botId: id };
   return {
     openNewChat: (mode) => {
       ui2.set((state) => ({ ...state, newChat: mode, menu: null, palette: null }));
@@ -1361,8 +1368,8 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     closeSettings: () => {
       ui2.set((state) => state.settings ? { ...state, settings: null } : state);
     },
-    openMemory: (botId) => {
-      ui2.set((state) => ({ ...state, memory: botId, menu: null, palette: null }));
+    openMemory: (id) => {
+      ui2.set((state) => ({ ...state, memory: id, menu: null, palette: null }));
     },
     closeMemory: () => {
       ui2.set((state) => state.memory ? { ...state, memory: null } : state);
@@ -1433,9 +1440,9 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     // Hours come back in this browser's time zone, so days start at local midnight.
     usage: () => call2("usage", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
     // `summarize` starts a summary when the entries changed; `regenerate` always does.
-    memoryView: (botId, flags = {}) => call2("memory-view", { botId, ...flags }),
-    memoryAsk: (botId, text) => call2("memory-ask", { botId, text }),
-    memoryForget: (botId, entry) => call2("memory-forget", { botId, scope: entry.scope, topic: entry.topic, text: entry.text }),
+    memoryView: (id, flags = {}) => call2("memory-view", { ...memoryOf(id), ...flags }),
+    memoryAsk: (id, text) => call2("memory-ask", { ...memoryOf(id), text }),
+    memoryForget: (id, entry) => call2("memory-forget", { ...memoryOf(id), scope: entry.scope, topic: entry.topic, text: entry.text }),
     diagnostics: (payload) => call2("diagnostics", payload),
     diagnosticsLog: () => call2("diagnostics-log"),
     diagnosticsClear: () => call2("diagnostics-clear"),
@@ -5960,7 +5967,7 @@ function HeaderPill({ sessionId, useRoster, useSessions, useSessionStatus, useSe
   const detailsOpen = useUi((state) => state.details === sessionId);
   const name = bot?.name ?? room2?.name ?? "";
   const useNews = useMemoryNews ?? noNews;
-  const memoryIds = bot ? [bot.id] : room2?.members ?? [];
+  const memoryIds = bot ? [bot.id] : room2 ? [room2.id, ...room2.members] : [];
   const notice = useMemoryNotice(memoryIds, useNews);
   const changed = useNews((map) => latestMemoryChange(map, memoryIds));
   (0, import_react10.useEffect)(() => {
@@ -7790,31 +7797,31 @@ var POLL_MS2 = 1500;
 var MENU_EXIT_MS2 = 120;
 var counts = /* @__PURE__ */ new Map();
 var countListeners = /* @__PURE__ */ new Set();
-function noteCount(botId, count) {
-  if (counts.get(botId) === count) return;
-  counts.set(botId, count);
+function noteCount(id, count) {
+  if (counts.get(id) === count) return;
+  counts.set(id, count);
   for (const listener of countListeners) listener();
 }
-function useMemoryCount(botId, actions) {
-  const [count, setCount] = (0, import_react18.useState)(counts.get(botId) ?? null);
+function useMemoryCount(id, actions) {
+  const [count, setCount] = (0, import_react18.useState)(counts.get(id) ?? null);
   (0, import_react18.useEffect)(() => {
-    const listener = () => setCount(counts.get(botId) ?? null);
+    const listener = () => setCount(counts.get(id) ?? null);
     countListeners.add(listener);
     listener();
     let stop = false;
-    actions.memoryView?.(botId).then((view) => {
-      if (!stop) noteCount(botId, view.entries.length);
+    actions.memoryView?.(id).then((view) => {
+      if (!stop) noteCount(id, view.entries.length);
     }).catch(() => {
     });
     return () => {
       stop = true;
       countListeners.delete(listener);
     };
-  }, [botId]);
+  }, [id]);
   return count;
 }
-function MemoryRow({ bot, actions }) {
-  const count = useMemoryCount(bot.id, actions);
+function MemoryRow({ owner, actions }) {
+  const count = useMemoryCount(owner.id, actions);
   const label = count === null ? t("Loading…") : count === 0 ? t("Nothing saved yet") : count === 1 ? t("1 entry") : t("{count} entries", { count });
   return (0, import_react18.createElement)(
     "div",
@@ -7822,7 +7829,7 @@ function MemoryRow({ bot, actions }) {
     (0, import_react18.createElement)("div", { className: "bt-section-title" }, t("Memory")),
     (0, import_react18.createElement)(
       "button",
-      { type: "button", className: "bt-mem-row", "aria-label": t("Manage {name}'s memory", { name: bot.name }), onClick: () => actions.openMemory(bot.id) },
+      { type: "button", className: "bt-mem-row", "aria-label": t("Manage {name}'s memory", { name: owner.name }), onClick: () => actions.openMemory(owner.id) },
       (0, import_react18.createElement)(MemoryIcon),
       (0, import_react18.createElement)("span", { className: "bt-mem-row-copy" }, label),
       (0, import_react18.createElement)("span", { className: "bt-mem-row-go" }, t("Manage"), (0, import_react18.createElement)(ChevronRightIcon))
@@ -7854,14 +7861,14 @@ function Skeleton({ label }) {
     label ? (0, import_react18.createElement)("div", { className: "bt-mem-skel-label" }, label) : null
   );
 }
-function Summary({ bot, view, regenerate }) {
+function Summary({ owner, view, regenerate }) {
   if (view.entries.length === 0) {
     return (0, import_react18.createElement)(
       "div",
       { className: "bt-mem-empty" },
       (0, import_react18.createElement)("div", { className: "bt-mem-empty-mark" }, (0, import_react18.createElement)(MemoryIcon)),
-      (0, import_react18.createElement)("div", { className: "bt-mem-empty-title" }, t("{name} has not saved anything yet", { name: bot.name })),
-      (0, import_react18.createElement)("div", { className: "bt-mem-empty-text" }, t("Bots keep lasting preferences, decisions, and what you ask them to remember. Tell {name} below, or in its chat.", { name: bot.name }))
+      (0, import_react18.createElement)("div", { className: "bt-mem-empty-title" }, owner.group ? t("Nothing is saved for this group yet") : t("{name} has not saved anything yet", { name: owner.name })),
+      (0, import_react18.createElement)("div", { className: "bt-mem-empty-text" }, owner.group ? t("A group keeps the decisions, rules, and facts its work needs, for its members to read here. Tell it below, or in the group.") : t("Bots keep lasting preferences, decisions, and what you ask them to remember. Tell {name} below, or in its chat.", { name: owner.name }))
     );
   }
   const failed = view.error && !view.summarizing ? (0, import_react18.createElement)(
@@ -7927,10 +7934,10 @@ function EntryRow({ entry, remove }) {
     }, confirming ? t("Remove") : (0, import_react18.createElement)(TrashIcon))
   );
 }
-function Entries({ bot, view, remove }) {
+function Entries({ owner, view, remove }) {
   const groups = groupEntries(view.entries);
-  const sections = [
-    { scope: "own", title: t("{name}'s memory", { name: bot.name }), size: view.sizes.own },
+  const sections = owner.group ? [{ scope: "group", title: t("Group memory"), hint: t("Only its members read it"), size: view.sizes.group }] : [
+    { scope: "own", title: t("{name}'s memory", { name: owner.name }), size: view.sizes.own },
     { scope: "team", title: t("Team memory"), hint: t("Every Bot reads it"), size: view.sizes.team }
   ];
   return (0, import_react18.createElement)(
@@ -7985,7 +7992,7 @@ function Reply({ answer, dismiss }) {
     )
   );
 }
-function useMemoryView(botId, actions) {
+function useMemoryView(id, actions) {
   const [view, setView] = (0, import_react18.useState)(null);
   const [error, setError] = (0, import_react18.useState)("");
   const timer = (0, import_react18.useRef)(0);
@@ -7994,20 +8001,20 @@ function useMemoryView(botId, actions) {
   const show = (0, import_react18.useCallback)((next) => {
     setView(next);
     setError("");
-    noteCount(botId, next.entries.length);
-  }, [botId]);
+    noteCount(id, next.entries.length);
+  }, [id]);
   const load = (0, import_react18.useCallback)(async (flags = {}) => {
     clearTimeout(timer.current);
     const ticket = ++latest.current;
     try {
-      const next = await actions.memoryView(botId, flags);
+      const next = await actions.memoryView(id, flags);
       if (!alive.current || ticket !== latest.current) return;
       show(next);
       if (next.summarizing) timer.current = setTimeout(() => void load({ summarize: flags.summarize || flags.regenerate }), POLL_MS2);
     } catch (failure) {
       if (alive.current && ticket === latest.current) setError(failure?.message ?? String(failure));
     }
-  }, [botId]);
+  }, [id]);
   (0, import_react18.useEffect)(() => {
     alive.current = true;
     void load({ summarize: true });
@@ -8015,7 +8022,7 @@ function useMemoryView(botId, actions) {
       alive.current = false;
       clearTimeout(timer.current);
     };
-  }, [botId]);
+  }, [id]);
   return { view, error, load, show };
 }
 function useNow(every) {
@@ -8026,8 +8033,8 @@ function useNow(every) {
   }, [every]);
   return now;
 }
-function MemoryDialog({ bot, actions, leaving = false }) {
-  const { view, error, load, show } = useMemoryView(bot.id, actions);
+function MemoryDialog({ owner, actions, leaving = false }) {
+  const { view, error, load, show } = useMemoryView(owner.id, actions);
   const [page, setPage] = (0, import_react18.useState)("summary");
   const [menu, setMenu] = (0, import_react18.useState)(false);
   const [menuShown, menuLeaving] = useLinger(menu, MENU_EXIT_MS2);
@@ -8074,7 +8081,7 @@ function MemoryDialog({ bot, actions, leaving = false }) {
   };
   const remove = async (entry) => {
     try {
-      show(await actions.memoryForget(bot.id, entry));
+      show(await actions.memoryForget(owner.id, entry));
       return true;
     } catch (failure) {
       setAnswer({ asked: entry.text, error: failure?.message ?? String(failure) });
@@ -8088,7 +8095,7 @@ function MemoryDialog({ bot, actions, leaving = false }) {
     setText("");
     setAnswer({ asked, pending: true });
     try {
-      const result = await actions.memoryAsk(bot.id, asked);
+      const result = await actions.memoryAsk(owner.id, asked);
       setAnswer({ asked, reply: result.reply, changes: result.changes });
       show(result.view);
       if (result.changes.some((change) => change.ok)) void load({ summarize: page === "summary" });
@@ -8107,13 +8114,13 @@ function MemoryDialog({ bot, actions, leaving = false }) {
     (0, import_react18.createElement)("div", { className: "bt-scrim bt-mem-scrim", onMouseDown: close }),
     (0, import_react18.createElement)(
       "div",
-      { className: "bt-mem", role: "dialog", "aria-modal": true, "aria-label": t("{name}'s memory", { name: bot.name }) },
+      { className: "bt-mem", role: "dialog", "aria-modal": true, "aria-label": t("{name}'s memory", { name: owner.name }) },
       (0, import_react18.createElement)(
         "div",
         { className: "bt-mem-head" },
         page === "entries" ? (0, import_react18.createElement)("button", { type: "button", className: "bt-icon-btn", "aria-label": t("Back to the summary"), onClick: backToSummary }, (0, import_react18.createElement)(ChevronLeftIcon)) : null,
         (0, import_react18.createElement)("h2", null, page === "entries" ? t("All entries") : t("Memory summary")),
-        (0, import_react18.createElement)("span", { className: "bt-mem-status" }, page === "summary" ? [bot.name, status].filter(Boolean).join(" · ") : status),
+        (0, import_react18.createElement)("span", { className: "bt-mem-status" }, page === "summary" ? [owner.name, status].filter(Boolean).join(" · ") : status),
         (0, import_react18.createElement)("span", { className: "bt-mem-head-gap" }),
         (0, import_react18.createElement)("button", { ref: dotsRef, type: "button", className: "bt-icon-btn", "aria-label": t("Memory options"), "aria-haspopup": "menu", "aria-expanded": menu, onClick: () => setMenu((value) => !value) }, (0, import_react18.createElement)(DotsIcon)),
         (0, import_react18.createElement)("button", { type: "button", className: "bt-icon-btn", "aria-label": t("Close memory"), onClick: close }, (0, import_react18.createElement)(CloseIcon)),
@@ -8137,7 +8144,7 @@ function MemoryDialog({ bot, actions, leaving = false }) {
         "div",
         { className: "bt-mem-body" },
         error ? (0, import_react18.createElement)("div", { className: "bt-error", role: "alert", style: { padding: 0 } }, hostText(error)) : null,
-        view === null ? error ? null : (0, import_react18.createElement)(Skeleton) : page === "entries" ? (0, import_react18.createElement)(Entries, { bot, view, remove }) : (0, import_react18.createElement)(Summary, { bot, view, regenerate })
+        view === null ? error ? null : (0, import_react18.createElement)(Skeleton) : page === "entries" ? (0, import_react18.createElement)(Entries, { owner, view, remove }) : (0, import_react18.createElement)(Summary, { owner, view, regenerate })
       ),
       (0, import_react18.createElement)(
         "div",
@@ -8153,7 +8160,7 @@ function MemoryDialog({ bot, actions, leaving = false }) {
             maxLength: 2e3,
             disabled: view === null,
             placeholder: t("Ask or update"),
-            "aria-label": t("Ask about or update {name}'s memory", { name: bot.name }),
+            "aria-label": t("Ask about or update {name}'s memory", { name: owner.name }),
             onChange: (event) => setText(event.target.value)
           }),
           (0, import_react18.createElement)(
@@ -11917,6 +11924,7 @@ function GroupOverview({ room: room2, roster, actions, usage, useWork, openSetti
       (0, import_react33.createElement)("div", { className: "bt-section-title" }, t("Permissions")),
       (0, import_react33.createElement)("div", { className: "bt-kv" }, (0, import_react33.createElement)("span", { className: presetDanger(room2.permission) ? "bt-perm-danger" : void 0 }, presetName(room2.permission, roster.permissions)))
     ) : null,
+    roster.memory === false ? null : (0, import_react33.createElement)(MemoryRow, { key: "memory", owner: { id: room2.id, name: room2.name, group: true }, actions }),
     usage ? (0, import_react33.createElement)(
       "div",
       { key: "usage" },
@@ -12058,7 +12066,7 @@ function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, roster, a
           (0, import_react33.createElement)(FolderMenu, { value: bot.workDir, actions, run, wide: true, onPick: (workDir) => run(actions.updateBot(bot.id, { workDir })) })
         ),
         bot.instructions ? (0, import_react33.createElement)(About, { key: "about", text: bot.instructions }) : (0, import_react33.createElement)("button", { key: "about", type: "button", className: "bt-more", onClick: () => setView("settings") }, t("Add instructions in Bot settings")),
-        roster.memory === false ? null : (0, import_react33.createElement)(MemoryRow, { key: "memory", bot, actions }),
+        roster.memory === false ? null : (0, import_react33.createElement)(MemoryRow, { key: "memory", owner: { id: bot.id, name: bot.name }, actions }),
         usage ? (0, import_react33.createElement)(
           "div",
           { key: "usage" },
@@ -12735,7 +12743,14 @@ function Overlays({ useRoster, useUi, useSessions, useSessionStatus, useActivity
   }, [ui2.details, ui2.view, ui2.renaming, ui2.tab]);
   const pane = open ?? kept;
   const [settings, settingsLeaving] = useLinger(ui2.settings, DIALOG_EXIT_MS);
-  const [memory, memoryLeaving] = useLinger(ui2.memory && roster.byId[ui2.memory] ? ui2.memory : null, DIALOG_EXIT_MS);
+  const memoryOwner = (id) => {
+    const bot = roster.byId[id];
+    if (bot) return { id: bot.id, name: bot.name };
+    const room2 = roster.roomsById[id];
+    return room2 ? { id: room2.id, name: room2.name, group: true } : null;
+  };
+  const [memory, memoryLeaving] = useLinger(ui2.memory && memoryOwner(ui2.memory) ? ui2.memory : null, DIALOG_EXIT_MS);
+  const owner = memory ? memoryOwner(memory) : null;
   const [menu, menuLeaving] = useLinger(ui2.menu, MENU_EXIT_MS3);
   return (0, import_react35.createElement)(
     import_react35.Fragment,
@@ -12747,7 +12762,7 @@ function Overlays({ useRoster, useUi, useSessions, useSessionStatus, useActivity
     ui2.voice ? (0, import_react_dom9.createPortal)((0, import_react35.createElement)(VoiceMode, { key: ui2.voice, sessionId: ui2.voice, roster, actions, useSessions, useSessionStatus }), document.body) : null,
     menu ? (0, import_react_dom9.createPortal)((0, import_react35.createElement)(ContextMenu, { key: `${menu.kind ?? ""}:${menu.id}:${menu.x}:${menu.y}`, menu, roster, actions, leaving: menuLeaving }), document.body) : null,
     settings ? (0, import_react_dom9.createPortal)((0, import_react35.createElement)(SettingsDialog, { page: settings.page, id: settings.id, roster, actions, useUpdate, leaving: settingsLeaving }), document.body) : null,
-    memory && roster.byId[memory] ? (0, import_react_dom9.createPortal)((0, import_react35.createElement)(MemoryDialog, { key: memory, bot: roster.byId[memory], actions, leaving: memoryLeaving }), document.body) : null
+    owner ? (0, import_react_dom9.createPortal)((0, import_react35.createElement)(MemoryDialog, { key: owner.id, owner, actions, leaving: memoryLeaving }), document.body) : null
   );
 }
 

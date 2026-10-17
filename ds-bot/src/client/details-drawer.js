@@ -125,8 +125,8 @@ function MemberRow({ member, entry, room, roster, actions, now }) {
     h(MemberApprovals, { entry, bot: member, actions }))
 }
 
-// A group's overview: what members read, who is in it, and who answers. Changes are
-// made in its settings.
+// A group's overview: what members read, who is in it, who answers, and what it
+// remembers. Changes are made in its settings.
 function GroupOverview({ room, roster, actions, usage, useWork, openSettings }) {
   const members = room.members.map(id => roster.byId[id]).filter(Boolean)
   const { entries, now } = useMemberWork(room, useWork)
@@ -143,6 +143,7 @@ function GroupOverview({ room, roster, actions, usage, useWork, openSettings }) 
       h('div', { className: 'bt-kv' }, h('span', null, t(ROOM_MODES.find(([id]) => id === shownMode(room, roster))?.[1] ?? 'Everyone')))),
     room.permission ? h('div', { key: 'permission' }, h('div', { className: 'bt-section-title' }, t('Permissions')),
       h('div', { className: 'bt-kv' }, h('span', { className: presetDanger(room.permission) ? 'bt-perm-danger' : undefined }, presetName(room.permission, roster.permissions)))) : null,
+    roster.memory === false ? null : h(MemoryRow, { key: 'memory', owner: { id: room.id, name: room.name, group: true }, actions }),
     usage ? h('div', { key: 'usage' }, h('div', { className: 'bt-section-title' }, t('Usage')),
       h('div', { className: 'bt-kv' }, h('span', null, room.name), h('span', null, usage))) : null,
   ]
@@ -249,7 +250,7 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
         bot.instructions
           ? h(About, { key: 'about', text: bot.instructions })
           : h('button', { key: 'about', type: 'button', className: 'bt-more', onClick: () => setView('settings') }, t('Add instructions in Bot settings')),
-        roster.memory === false ? null : h(MemoryRow, { key: 'memory', bot, actions }),
+        roster.memory === false ? null : h(MemoryRow, { key: 'memory', owner: { id: bot.id, name: bot.name }, actions }),
         usage ? h('div', { key: 'usage' }, h('div', { className: 'bt-section-title' }, t('Usage')),
           h('div', { className: 'bt-kv' }, h('span', null, bot.name), h('span', null, usage))) : null,
         h(ScheduleSummary, { key: 'routines', bot, actions }),

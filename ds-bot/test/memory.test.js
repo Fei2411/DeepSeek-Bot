@@ -620,18 +620,25 @@ test('when a turn ends, the memory review keeps what the user said, through the 
   assert.equal((await call('state', {})).value.memoryNews.b2.text, 'The user writes Rust')
 })
 
-test('in a group, each member reviews the log, and an admin may keep it for the team', async (t) => {
+test('a group\'s review keeps what is said there in the group memory, read once for all its members', async (t) => {
   const replies = [JSON.stringify({ changes: [{ op: 'add', text: 'The user wants everything under one page', team: true }] })]
-  const { ctx, call, read, requests, stop } = start({ replies, config: { memoryReviewDelayMs: 0 } })
+  const { ctx, call, read, home, requests, stop } = start({ replies, config: { memoryReviewDelayMs: 0 } })
   t.after(() => stop())
   await call('state', {})
   ctx.emit('agent/status', { agent: { id: 'g3' }, status: 'idle' })
   await reviewed(call)
-  assert.match(requests[0].system, /\{"op": "add", "text": "…", "team": true\}/)
-  assert.match(requests[0].messages[0].content[0].text, /New in the group chat "Launch", oldest first:\nUser: Keep everything you send me under one page\nCoder: Will do\.\n\nWrite every new or changed entry in English\.$/)
-  assert.match(read('team', 'MEMORY.md'), /- The user wants everything under one page \[source: group "Launch" \d{2}-\d{2} \d{2}:\d{2}; by: Coder; added: /)
-  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'group:r1:b3': 3 })
-  assert.equal((await call('state', {})).value.memoryNews.b3.op, 'add')
+  assert.equal(requests.length, 1)
+  assert.match(requests[0].system, /^You keep the long-term memory of one group chat/)
+  // The admin's model reads it, but no team entry comes of a group's review.
+  assert.doesNotMatch(requests[0].system, /"team": true/)
+  assert.equal(requests[0].sessionId, 'r1')
+  const text = requests[0].messages[0].content[0].text
+  assert.match(text, /^The group chat: "Launch", with the user and Writer, Coder \(admin\)\.\n\nMEMORY\.md has 0 of 4000 characters \(group\) and 0 of 4000 \(team\)\.\n\nIts memory now \(group: shared by the members of this group; team: shared by every Bot\):\n\(none yet\)\n/)
+  assert.match(text, /New in the group chat "Launch", oldest first:\nUser: Keep everything you send me under one page\nCoder: Will do\.\n\nWrite every new or changed entry in English\.$/)
+  assert.match(read('groups', 'r1', 'MEMORY.md'), /- The user wants everything under one page \[source: group "Launch" \d{2}-\d{2} \d{2}:\d{2}; added: /)
+  for (const elsewhere of [['team'], ['bots', 'b2'], ['bots', 'b3']]) assert.equal(existsSync(join(home, 'memory', ...elsewhere, 'MEMORY.md')), false, elsewhere.join('/'))
+  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'group:r1': 3 })
+  assert.equal((await call('state', {})).value.memoryNews.r1.op, 'add')
 })
 
 test('a first group review reads back to the user\'s line past a round of replies', async (t) => {
@@ -646,7 +653,7 @@ test('a first group review reads back to the user\'s line past a round of replie
   await reviewed(call)
   assert.equal(requests.length, 1)
   assert.match(requests[0].messages[0].content[0].text, /oldest first:\nUser: From now on, answer in Chinese\nWriter: Reply 1\n/)
-  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'group:r1:b3': 7 })
+  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'group:r1': 7 })
 })
 
 test('an answer that is no list of changes keeps the review\'s place, and the next one reads the turn again', async (t) => {
@@ -781,37 +788,108 @@ test('the pill opens the memory that changed last on the host, when one poll bri
   assert.equal(latestMemoryChange({}, []), null)
 })
 
-test('a member nobody addresses is reviewed with the others before the group log drops its lines', async (t) => {
+const twoMembers = home => writeFileSync(join(home, 'state.json'), JSON.stringify({ ...TEAM, rooms: { r1: { ...TEAM.rooms.r1, members: ['b2', 'b3', 'b4'], sessions: { b2: 'g2', b3: 'g3' } } } }))
+
+test('the members of a group read its memory in their Sessions there, and no Bot reads it anywhere else', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
-  mkdirSync(join(home, 'memory'), { recursive: true })
-  writeFileSync(join(home, 'memory', 'reviewed.json'), JSON.stringify({ 'group:r1:b2': 5, 'group:r1:b3': 44 }))
-  const log = [{ who: 'User', text: 'Call me Lu from now on', seq: 6 }, ...Array.from({ length: 39 }, (_, at) => ({ who: 'Coder', botId: 'b3', text: `Step ${at + 1}`, seq: at + 7 }))]
-  const room = { ...TEAM.rooms.r1, sessions: { b2: 'g2', b3: 'g3' }, seq: 45, log }
-  writeFileSync(join(home, 'state.json'), JSON.stringify({ ...TEAM, rooms: { r1: room } }))
-  const { ctx, call, read, requests, stop } = start({ home, replies: [JSON.stringify({ changes: [] })], config: { memoryReviewDelayMs: 0 } })
+  twoMembers(home)
+  const { ctx, call, tool, section, requests, stop } = start({ home, replies: [JSON.stringify({ changes: [{ op: 'add', text: 'The user wants everything under one page' }] })], config: { memoryReviewDelayMs: 0 } })
   t.after(() => stop())
   await call('state', {})
+  // Two members' turns end: the group is reviewed once, not once per member.
+  ctx.emit('agent/status', { agent: { id: 'g2' }, status: 'idle' })
   ctx.emit('agent/status', { agent: { id: 'g3' }, status: 'idle' })
   await reviewed(call)
   assert.equal(requests.length, 1)
-  assert.match(requests[0].messages[0].content[0].text, /^The Bot: Writer[\s\S]*\nUser: Call me Lu from now on\n/)
-  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'group:r1:b2': 45, 'group:r1:b3': 45 })
+  for (const member of ['g2', 'g3']) {
+    assert.match(section(member), /\n\n## Group memory, shared by the members of this group chat\nOnly the members of this group read it[^\n]*\n\n- The user wants everything under one page \[source: group "Launch"[^\n]*\]$/)
+    assert.match(await tool('recall', { query: 'page' }, member), /^Entries with "page" in your memory, the group memory, and the team memory:\n\[group · MEMORY\.md\] The user wants everything under one page/)
+  }
+  // Not in a member's own chat, nor for a Bot outside the group, a Main Bot included.
+  for (const elsewhere of ['b2', 'b3', 'b4', 'm1']) {
+    assert.doesNotMatch(section(elsewhere), /one page|Group memory/, elsewhere)
+    assert.match(await tool('recall', { query: 'page' }, elsewhere), /^Nothing in your memory and the team memory mentions "page"/, elsewhere)
+    assert.match(await tool('recall', { scope: 'group' }, elsewhere), /^There is no group memory here/, elsewhere)
+  }
 })
 
-test('a member never reviewed in a group is brought along too, from the oldest line', async (t) => {
+test('in a group, remember and forget write the group memory unless told otherwise, for any member', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
-  mkdirSync(join(home, 'memory'), { recursive: true })
-  writeFileSync(join(home, 'memory', 'reviewed.json'), JSON.stringify({ 'group:r1:b3': 44 }))
-  const log = [{ who: 'User', text: 'Call me Lu from now on', seq: 6 }, ...Array.from({ length: 39 }, (_, at) => ({ who: 'Coder', botId: 'b3', text: `Step ${at + 1}`, seq: at + 7 }))]
-  writeFileSync(join(home, 'state.json'), JSON.stringify({ ...TEAM, rooms: { r1: { ...TEAM.rooms.r1, sessions: { b2: 'g2', b3: 'g3' }, seq: 45, log } } }))
-  const { ctx, call, read, requests, stop } = start({ home, replies: [JSON.stringify({ changes: [] })], config: { memoryReviewDelayMs: 0 } })
+  twoMembers(home)
+  const { tool, call, read, journal, stop } = start({ home })
   t.after(() => stop())
-  await call('state', {})
-  ctx.emit('agent/status', { agent: { id: 'g3' }, status: 'idle' })
-  await reviewed(call)
-  assert.equal(requests.length, 1)
-  assert.match(requests[0].messages[0].content[0].text, /^The Bot: Writer[\s\S]*\nUser: Call me Lu from now on\n/)
-  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'group:r1:b2': 45, 'group:r1:b3': 45 })
+  assert.match(await tool('remember', { text: 'Builds go in the out folder' }, 'g2'), /^Saved to the group memory, in MEMORY\.md \(MEMORY\.md: \d+ of 4000 characters\)\. Every member sees it in its next conversation in this group; recall finds it now\.$/)
+  assert.match(read('groups', 'r1', 'MEMORY.md'), /- Builds go in the out folder \[source: group "Launch" \d{2}-\d{2} \d{2}:\d{2}; by: Writer; added: /)
+  assert.equal(existsSync(join(home, 'memory', 'bots', 'b2', 'MEMORY.md')), false)
+  // "own" keeps it for the Bot itself, in all its conversations.
+  assert.match(await tool('remember', { text: 'I review drafts twice', scope: 'own' }, 'g2'), /^Saved to your memory/)
+  assert.match(read('bots', 'b2', 'MEMORY.md'), /- I review drafts twice \[source: group "Launch"/)
+  // Another member changes the same memory.
+  assert.match(await tool('remember', { text: 'Builds go in the dist folder', replace: 'out folder' }, 'g3'), /"Builds go in the out folder" is now "Builds go in the dist folder"/)
+  assert.match(await tool('forget', { entry: 'dist folder' }, 'g3'), /^Removed from the group memory/)
+  assert.deepEqual(journal().map(record => [record.op, record.scope, record.actorName]), [
+    ['add', 'group:r1', 'Writer'], ['add', 'bot:b2', 'Writer'], ['replace', 'group:r1', 'Coder'], ['remove', 'group:r1', 'Coder'],
+  ])
+  // A Bot's own chat has no group memory to write.
+  assert.match(await tool('remember', { text: 'x', scope: 'group' }, 'b2'), /^There is no group memory here/)
+  // A member removed from the group writes no more of it.
+  await tool('remember', { text: 'Ship on Friday' }, 'g2')
+  assert.equal((await call('update-room', { id: 'r1', remove: ['b2'] })).ok, true)
+  assert.match(await tool('remember', { text: 'Still here' }, 'g2'), /^Only Bots on the team keep a memory\./)
+  assert.match(await tool('forget', { entry: 'Friday' }, 'g2'), /^Only Bots on the team keep a memory\./)
+  assert.deepEqual(parseMemory(read('groups', 'r1', 'MEMORY.md')).entries.map(entry => entry.text), ['Ship on Friday'])
+})
+
+test('a group Session frozen before groups kept a memory is frozen again, with it', async (t) => {
+  const { tool, section, home, stop } = start()
+  t.after(() => stop())
+  await tool('remember', { text: 'Ship on Friday' }, 'g3')
+  writeFileSync(join(home, 'memory', 'snapshots', 'g3.md'), section('b3'))
+  assert.match(section('g3'), /## Group memory, shared by the members of this group chat\n[^\n]*\n\n- Ship on Friday \[/)
+})
+
+test('deleting a group moves its memory to the archive, with its members\' snapshots gone', async (t) => {
+  const { tool, call, home, journal, section, stop } = start()
+  t.after(() => stop())
+  await tool('remember', { text: 'Ship on Friday' }, 'g3')
+  section('g3')
+  assert.equal(existsSync(join(home, 'memory', 'snapshots', 'g3.md')), true)
+  assert.equal((await call('delete-room', { id: 'r1' })).ok, true)
+  assert.equal(existsSync(join(home, 'memory', 'groups', 'r1')), false)
+  assert.equal(existsSync(join(home, 'memory', 'snapshots', 'g3.md')), false)
+  const [archived] = readdirSync(join(home, 'memory', 'archive'))
+  assert.match(archived, /^group-r1-\d{4}-/)
+  assert.match(readFileSync(join(home, 'memory', 'archive', archived, 'MEMORY.md'), 'utf8'), /Ship on Friday/)
+  assert.deepEqual([journal().at(-1).op, journal().at(-1).scope], ['archive', 'group:r1'])
+})
+
+test('a group\'s memory panel shows only the group memory, and what the user changes there stays there', async (t) => {
+  const replies = ['## Overview\nThe group ships on Friday.', JSON.stringify({ reply: 'Done.', changes: [{ op: 'add', text: 'Demo on Monday', team: true }, { op: 'remove', entry: 1 }] })]
+  const { tool, call, read, requests, stop } = start({ replies })
+  t.after(() => stop())
+  await tool('remember', { text: 'Ship on Friday' }, 'g3')
+  await tool('remember', { text: 'Likes tea' }, 'b3')
+  await tool('remember', { text: 'Keep it short', scope: 'team' }, 'm1')
+  const view = (await call('memory-view', { roomId: 'r1', summarize: true })).value
+  assert.equal(view.roomId, 'r1')
+  assert.deepEqual(view.entries.map(entry => [entry.scope, entry.text, entry.by]), [['group', 'Ship on Friday', 'Coder']])
+  assert.deepEqual(Object.keys(view.sizes), ['group'])
+  for (let tries = 0; tries < 200 && (await call('memory-view', { roomId: 'r1' })).value.summarizing; tries += 1) await settle()
+  assert.match(requests[0].messages[0].content[0].text, /^Here is everything the group chat "Launch" remembers[^\n]*\n\n## Group memory\n- Ship on Friday\n/)
+  assert.doesNotMatch(requests[0].messages[0].content[0].text, /Likes tea|Keep it short/)
+  assert.equal(requests[0].sessionId, 'r1')
+  assert.equal((await call('memory-view', { roomId: 'r1' })).value.summary.text, '## Overview\nThe group ships on Friday.')
+
+  const answer = (await call('memory-ask', { roomId: 'r1', text: 'The demo is on Monday; Friday is off' })).value
+  assert.match(requests[1].system, /^You keep the memory of one group chat/)
+  assert.doesNotMatch(requests[1].system, /"team"/)
+  assert.match(requests[1].messages[0].content[0].text, /^Entries of the group chat "Launch" \(group: shared by its members\):\n\[1\] \(group\) Ship on Friday\n/)
+  assert.deepEqual(answer.changes.map(change => [change.op, change.scope, change.ok]), [['add', 'group', true], ['remove', 'group', true]])
+  assert.match(read('groups', 'r1', 'MEMORY.md'), /- Demo on Monday \[source: memory panel; by: user; added: /)
+  assert.doesNotMatch(read('team', 'MEMORY.md'), /Demo/)
+  const forgot = (await call('memory-forget', { roomId: 'r1', scope: 'group', topic: null, text: 'Demo on Monday' })).value
+  assert.deepEqual(forgot.entries, [])
+  assert.equal((await call('memory-view', { roomId: 'nope' })).error.message, 'Unknown group chat')
 })
 
 // Lines reach a group's log as posts, through the relay; the aborted round lets no
@@ -827,7 +905,7 @@ const postToGroup = async (ctx, texts) => {
 test('a queued review keeps the group lines that leave the log while it waits', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
   mkdirSync(join(home, 'memory'), { recursive: true })
-  writeFileSync(join(home, 'memory', 'reviewed.json'), JSON.stringify({ 'chat:b2': 9, 'group:r1:b2': 5, 'group:r1:b3': 44 }))
+  writeFileSync(join(home, 'memory', 'reviewed.json'), JSON.stringify({ 'chat:b2': 9, 'group:r1': 5 }))
   const log = [{ who: 'User', text: 'Call me Lu from now on', seq: 6 }, ...Array.from({ length: 39 }, (_, at) => ({ who: 'Coder', botId: 'b3', text: `Step ${at + 1}`, seq: at + 7 }))]
   writeFileSync(join(home, 'state.json'), JSON.stringify({ ...TEAM, rooms: { r1: { ...TEAM.rooms.r1, sessions: { b2: 'g2', b3: 'g3' }, seq: 45, log } } }))
   let release
@@ -843,47 +921,47 @@ test('a queued review keeps the group lines that leave the log while it waits', 
   await postToGroup(ctx, Array.from({ length: 50 }, (_, at) => `More ${at + 1}`))
   release(JSON.stringify({ changes: [] }))
   await reviewed(call)
-  const writer = requests.map(request => request.messages[0].content[0].text).filter(text => text.startsWith('The Bot: Writer') && text.includes('group chat "Launch"'))
-  assert.match(writer[0], /\nUser: Call me Lu from now on\n/)
+  const group = requests.map(request => request.messages[0].content[0].text).filter(text => text.startsWith('The group chat: "Launch"'))
+  assert.match(group[0], /\nUser: Call me Lu from now on\n/)
 })
 
-for (const rejoins of [false, true]) {
-  test(`a member that leaves the group before its review reads nothing said after its turn${rejoins ? ', even once it is back' : ''}`, async (t) => {
-    const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
-    writeFileSync(join(home, 'state.json'), JSON.stringify({ ...TEAM, rooms: { r1: { ...TEAM.rooms.r1, members: ['b2', 'b3', 'b4'], sessions: { b2: 'g2', b3: 'g3' } } } }))
-    const { ctx, call, requests, stop } = start({ home, replies: [JSON.stringify({ changes: [] })], config: { memoryReviewDelayMs: 200 } })
-    t.after(() => stop())
-    await call('state', {})
-    ctx.emit('agent/status', { agent: { id: 'g2' }, status: 'idle' })
-    assert.equal((await call('update-room', { id: 'r1', remove: ['b2'] })).ok, true)
-    await postToGroup(ctx, ['The launch moved to Friday'])
-    if (rejoins) assert.equal((await call('update-room', { id: 'r1', add: ['b2'] })).ok, true)
-    await reviewed(call)
-    assert.equal(requests.length, 1)
-    const text = requests[0].messages[0].content[0].text
-    assert.match(text, /\nUser: Keep everything you send me under one page\nCoder: Will do\.\n/)
-    assert.doesNotMatch(text, /Friday/)
-  })
-}
+test('what is said after a member leaves is still reviewed, for the group', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
+  twoMembers(home)
+  const { ctx, call, read, requests, stop } = start({ home, replies: [JSON.stringify({ changes: [{ op: 'add', text: 'The launch moved to Friday' }] })], config: { memoryReviewDelayMs: 200 } })
+  t.after(() => stop())
+  await call('state', {})
+  ctx.emit('agent/status', { agent: { id: 'g2' }, status: 'idle' })
+  assert.equal((await call('update-room', { id: 'r1', remove: ['b2'] })).ok, true)
+  await postToGroup(ctx, ['The launch moved to Friday'])
+  await reviewed(call)
+  assert.equal(requests.length, 1)
+  const text = requests[0].messages[0].content[0].text
+  assert.match(text, /^The group chat: "Launch", with the user and Coder \(admin\), Temp\./)
+  assert.match(text, /\nUser: Keep everything you send me under one page\nCoder: Will do\.\n[\s\S]*The launch moved to Friday/)
+  assert.match(read('groups', 'r1', 'MEMORY.md'), /- The launch moved to Friday \[source: group "Launch"/)
+  assert.equal(existsSync(join(home, 'memory', 'bots', 'b2', 'MEMORY.md')), false)
+})
 
-test('a group admin deleted while its review writes leaves the team memory alone', async (t) => {
-  const many = Array.from({ length: 8 }, (_, at) => ({ op: 'add', text: `The team likes thing ${at + 1}`, team: true }))
+test('a group deleted while its review writes keeps no more of it, and its folder stays gone', async (t) => {
+  const many = Array.from({ length: 8 }, (_, at) => ({ op: 'add', text: `The group likes thing ${at + 1}` }))
   const { ctx, home, call, stop } = start({ replies: [JSON.stringify({ changes: many })], config: { memoryReviewDelayMs: 0 } })
   t.after(() => stop())
   await call('state', {})
   ctx.emit('agent/status', { agent: { id: 'g3' }, status: 'idle' })
-  const team = join(home, 'memory', 'team', 'MEMORY.md')
-  while (!existsSync(team)) await new Promise(resolve => setImmediate(resolve))
-  // b3 is the group's admin, so it must leave the group before it can go.
+  const folder = join(home, 'memory', 'groups', 'r1')
+  while (!existsSync(join(folder, 'MEMORY.md'))) await new Promise(resolve => setImmediate(resolve))
   assert.equal((await call('delete-room', { id: 'r1' })).ok, true)
-  assert.equal((await call('delete-bot', { id: 'b3' })).ok, true)
   await reviewed(call)
-  assert.ok(parseMemory(readFileSync(team, 'utf8')).entries.length < 8)
+  assert.equal(existsSync(folder), false)
+  const [archived] = readdirSync(join(home, 'memory', 'archive'))
+  assert.ok(parseMemory(readFileSync(join(home, 'memory', 'archive', archived, 'MEMORY.md'), 'utf8')).entries.length < 8)
+  assert.equal(existsSync(join(home, 'memory', 'team', 'MEMORY.md')), false)
 })
 
-test('a member removed from the group while its turn runs is still reviewed', async (t) => {
+test('a turn that ends after its member left the group is still reviewed, for the group', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
-  writeFileSync(join(home, 'state.json'), JSON.stringify({ ...TEAM, rooms: { r1: { ...TEAM.rooms.r1, members: ['b2', 'b3', 'b4'], sessions: { b2: 'g2', b3: 'g3' } } } }))
+  twoMembers(home)
   const { ctx, call, read, requests, stop } = start({ home, replies: [JSON.stringify({ changes: [{ op: 'add', text: 'The user wants one page' }] })], config: { memoryReviewDelayMs: 0 } })
   t.after(() => stop())
   await call('state', {})
@@ -892,8 +970,9 @@ test('a member removed from the group while its turn runs is still reviewed', as
   ctx.emit('agent/status', { agent: { id: 'g2' }, status: 'idle' })
   await reviewed(call)
   assert.equal(requests.length, 1)
-  assert.match(requests[0].messages[0].content[0].text, /^The Bot: Writer[\s\S]*\nUser: Keep everything you send me under one page\n/)
-  assert.match(read('bots', 'b2', 'MEMORY.md'), /- The user wants one page \[source: group "Launch"/)
+  assert.match(requests[0].messages[0].content[0].text, /^The group chat: "Launch"[\s\S]*\nUser: Keep everything you send me under one page\n/)
+  assert.match(read('groups', 'r1', 'MEMORY.md'), /- The user wants one page \[source: group "Launch"/)
+  assert.equal(existsSync(join(home, 'memory', 'bots', 'b2', 'MEMORY.md')), false)
 })
 
 test('a Bot deleted while its review writes keeps no more of it, and its folder stays gone', async (t) => {
@@ -922,26 +1001,18 @@ test('a long user message keeps both ends for the review', async (t) => {
   assert.ok(text.length < 3_400)
 })
 
-for (const [how, act] of [
-  ['the member leaves the group', call => call('update-room', { id: 'r1', remove: ['b2'] })],
-  ['the group is deleted', call => call('delete-room', { id: 'r1' })],
-]) {
-  test(`a group turn is still reviewed when ${how} before its review`, async (t) => {
-    const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
-    const room = { ...TEAM.rooms.r1, members: ['b2', 'b3', 'b4'], sessions: { b2: 'g2', b3: 'g3' } }
-    writeFileSync(join(home, 'state.json'), JSON.stringify({ ...TEAM, rooms: { r1: room } }))
-    const { ctx, call, read, requests, stop } = start({ home, replies: [JSON.stringify({ changes: [{ op: 'add', text: 'The user wants one page' }] })], config: { memoryReviewDelayMs: 200 } })
-    t.after(() => stop())
-    await call('state', {})
-    ctx.emit('agent/status', { agent: { id: 'g2' }, status: 'idle' })
-    const done = await act(call)
-    assert.equal(done.ok, true, JSON.stringify(done.error))
-    await reviewed(call)
-    assert.equal(requests.length, 1)
-    assert.match(requests[0].messages[0].content[0].text, /^The Bot: Writer[\s\S]*\nUser: Keep everything you send me under one page\n/)
-    assert.match(read('bots', 'b2', 'MEMORY.md'), /- The user wants one page \[source: group "Launch"/)
-  })
-}
+test('a group deleted before its review keeps nothing more, in no memory', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
+  twoMembers(home)
+  const { ctx, call, requests, stop } = start({ home, replies: [JSON.stringify({ changes: [{ op: 'add', text: 'The user wants one page' }] })], config: { memoryReviewDelayMs: 200 } })
+  t.after(() => stop())
+  await call('state', {})
+  ctx.emit('agent/status', { agent: { id: 'g2' }, status: 'idle' })
+  assert.equal((await call('delete-room', { id: 'r1' })).ok, true)
+  await reviewed(call)
+  assert.equal(requests.length, 0)
+  for (const where of [['groups', 'r1'], ['bots', 'b2'], ['team']]) assert.equal(existsSync(join(home, 'memory', ...where)), false, where.join('/'))
+})
 
 test('a first chat review pages back to the user\'s latest line', async (t) => {
   const events = Array.from({ length: 900 }, (_, at) => (at + 1 === 50
@@ -1066,18 +1137,18 @@ test('a memory review of a Bot chat names that chat and saves its changes', asyn
   assert.match(read('bots', 'b2', 'MEMORY.md'), /The user wants this remembered/)
 })
 
-test('a memory review of a group names the member Bot chat', async (t) => {
+test('a memory review of a group names the group chat', async (t) => {
   const { ctx, call, read, requests, stop } = start({
     requireSession: true, config: { memoryReviewDelayMs: 0 },
-    replies: [JSON.stringify({ changes: [{ op: 'add', text: 'Keep replies under one page', team: true }] })],
+    replies: [JSON.stringify({ changes: [{ op: 'add', text: 'Keep replies under one page' }] })],
   })
   t.after(() => stop())
   await call('state', {})
   ctx.emit('agent/status', { agent: { id: 'g3', session: idleSession }, status: 'idle' })
   await reviewed(call)
   assert.equal(requests.length, 1)
-  assert.equal(requests[0].sessionId, 'b3')
-  assert.match(read('team', 'MEMORY.md'), /Keep replies under one page/)
+  assert.equal(requests[0].sessionId, 'r1')
+  assert.match(read('groups', 'r1', 'MEMORY.md'), /Keep replies under one page/)
 })
 
 test('a memory call names the current part of the Bot chat', async (t) => {

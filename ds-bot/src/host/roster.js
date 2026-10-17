@@ -467,10 +467,13 @@ export function install(rt) {
   async function deleteRoom(id) {
     const room = rt.roomOf(id)
     if (room === undefined) throw new Error('Unknown group chat')
+    // Before the group's Sessions leave the state, which the archive reads.
+    const archived = rt.archiveGroupMemory(room)
     for (const botId of Object.keys(room.sessions ?? {})) rt.dropGroupSession(room, botId)
     delete state.rooms[id]
     rt.roomInbox.delete(id)
     rt.dropGroupLines(id)
+    await archived
     const failed = await saveForDelete()
     // Armed scheduled tasks refuse a plain archive and would keep delivering into
     // the deleted group; the session-stop that stopActivity runs removes them.

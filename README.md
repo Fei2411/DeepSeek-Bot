@@ -66,6 +66,8 @@ DS Bot has group chats. A group chat is a great way to get several bots to work 
 
 Any bot can hand work to another bot with @. That bot does the work on its own, and the group goes on. While it works, it keeps the group posted, and the group, the sidebar and its own chat show what it is doing. When it is done, it posts the result in the group, and the bot that asked for the work answers. To stop the work, open the group's details.
 
+A group chat has its own memory. What you tell the group stays in the group: its members use it there, and your other chats and the bots outside the group do not see it. You can manage it in the group's details.
+
 ![Group chat: the admin, Chief, hands the work to Writer and Coder](docs/images/group.png)
 
 ### Capabilities
