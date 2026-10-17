@@ -72,6 +72,60 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - run: npm test
 
+  app-package:
+    name: Desktop app package (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --no-fund --no-audit
+      - run: npm run dist
+      - name: Check the packaged app
+        run: node scripts/check-packed.mjs
+      # The runner is a fresh machine, so the installer may run here. It must install for the
+      # current user only, the installed app must pass the same check, and the uninstaller must
+      # remove it again.
+      - name: Install, check and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Find-Entry($root) {
+            Get-ChildItem "$root\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+              Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like 'DeepSeek Bot*' }
+          }
+          $installer = Get-Item dist-pack/DeepSeek-Bot-*-win-x64.exe
+          Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Bot'
+          $exe = Join-Path $dir 'DeepSeek Bot.exe'
+          if (-not (Test-Path $exe)) { throw "The installer did not put the app in $dir" }
+          $entry = Find-Entry 'HKCU:'
+          if (-not $entry) { throw 'No uninstall entry for the current user' }
+          if (Find-Entry 'HKLM:') { throw 'The installer installed for all users' }
+          node scripts/check-packed.mjs $exe
+          if ($LASTEXITCODE -ne 0) { throw 'The installed app failed its check' }
+          # The uninstaller removes the program only: the data location and the app's own data stay.
+          $kept = foreach ($folder in (Join-Path $HOME '.ds-bot'), (Join-Path $env:APPDATA 'DeepSeek Bot')) {
+            New-Item -ItemType Directory -Force $folder | Out-Null
+            $file = Join-Path $folder 'kept.txt'
+            Set-Content $file 'kept'
+            $file
+          }
+          $uninstaller = Join-Path $dir 'Uninstall DeepSeek Bot.exe'
+          Start-Process -FilePath $uninstaller -ArgumentList '/currentuser', '/S' -Wait
+          # The uninstaller goes on from a copy in the temp folder, so wait for its result.
+          $deadline = (Get-Date).AddSeconds(120)
+          while (((Test-Path $exe) -or (Find-Entry 'HKCU:')) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          if (Test-Path $exe) { throw 'The uninstaller left the app in place' }
+          if (Find-Entry 'HKCU:') { throw 'The uninstaller left its uninstall entry' }
+          foreach ($file in $kept) { if (-not (Test-Path $file)) { throw "The uninstaller removed $file" } }
+
   docker:
     name: Docker startup and data migration
     runs-on: ubuntu-latest
@@ -113,11 +167,11 @@ jobs:
 
   # The one check that branch rules require. A job whose needs failed is skipped,
   # and GitHub counts a skipped required check as passed, so this job always runs
-  # and fails unless the matrix, leak scan, app and Docker checks passed.
+  # and fails unless the matrix, leak scan, app, app package and Docker checks passed.
   result:
     name: Test result
-    needs: [test, scan, app, docker]
+    needs: [test, scan, app, app-package, docker]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: test "${{ needs.test.result }}" = success && test "${{ needs.scan.result }}" = success && test "${{ needs.app.result }}" = success && test "${{ needs.docker.result }}" = success
+      - run: test "${{ needs.test.result }}" = success && test "${{ needs.scan.result }}" = success && test "${{ needs.app.result }}" = success && test "${{ needs.app-package.result }}" = success && test "${{ needs.docker.result }}" = success

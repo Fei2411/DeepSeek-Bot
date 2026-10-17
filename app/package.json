@@ -4,12 +4,16 @@
   "version": "0.1.7",
   "private": true,
   "description": "DeepSeek Bot desktop app: the ds-bot team on its own pinned DeepSeek Harness.",
+  "author": "Fei2411",
   "license": "Apache-2.0",
   "type": "module",
   "main": "src/main.mjs",
   "scripts": {
     "build": "vite build",
     "start": "vite build && electron .",
+    "pack": "vite build && electron-builder --dir",
+    "dist": "vite build && electron-builder",
+    "check-packed": "node scripts/check-packed.mjs",
     "shot": "node scripts/shot.mjs",
     "icon": "node scripts/icon.mjs",
     "test": "node --test \"test/*.test.mjs\""
@@ -24,6 +28,7 @@
   },
   "devDependencies": {
     "electron": "44.7.0",
+    "electron-builder": "26.17.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-markdown": "10.1.0",

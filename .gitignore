@@ -1,7 +1,8 @@
 node_modules/
 *.tgz
-# The desktop app's window build (npm run build in app/).
+# The desktop app's window build (npm run build in app/) and its packages (npm run pack, npm run dist).
 /app/ui/dist/
+/app/dist-pack/
 
 # A DeepSeek Harness checkout for the tests and the test bench.
 /deepseek-harness/

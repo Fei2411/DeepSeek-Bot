@@ -1,0 +1,35 @@
+appId: io.github.fei2411.deepseekbot
+productName: DeepSeek Bot
+copyright: Copyright 2026 Fei2411 and the DS Bot contributors
+artifactName: DeepSeek-Bot-${version}-${os}-${arch}.${ext}
+directories:
+  output: dist-pack
+files:
+  - package.json
+  - src/**
+  - engine/**
+  - ui/dist/**
+  - assets/**
+# The Host runs pnpm as a separate Node process to install plugins, so it must be a plain file.
+asarUnpack:
+  - node_modules/pnpm/**
+# node-pty, sharp and koffi ship prebuilt binaries for each platform. A rebuild would compile
+# node-pty from source and needs a C++ toolchain.
+npmRebuild: false
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: assets/icon.ico
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  include: build/installer.nsh
+  installerLanguages: [zh_CN, en_US]
+  multiLanguageInstaller: true
+mac:
+  target: dmg
+  icon: assets/icon.png
+  category: public.app-category.productivity

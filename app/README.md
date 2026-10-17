@@ -48,6 +48,20 @@ node scripts/shot.mjs <tmp>/shot.png 20
 
 Never point `DS_BOT_HOME` at `~/.dsh` or at the data of an app that you use.
 
+## Package
+
+[electron-builder](https://www.electron.build/) packages the app with the settings in `electron-builder.yml`. Build on the platform that you package for: the native modules (`node-pty`, `sharp`, `koffi`) are taken from `node_modules` as npm installed them, not rebuilt.
+
+```sh
+npm run pack           # the app without an installer: dist-pack/win-unpacked/ (Windows), dist-pack/mac*/ (macOS)
+npm run dist           # the installer: dist-pack/DeepSeek-Bot-<version>-win-x64.exe (Windows), a .dmg (macOS)
+npm run check-packed   # starts the packaged app on throwaway folders with the mock model, chats once, closes it
+```
+
+`check-packed` takes another executable as its first argument, and a file for a screenshot of the window as its second.
+
+The Windows installer installs for the current user only, without administrator rights, by default into `%LOCALAPPDATA%\Programs\DeepSeek Bot` (`build/installer.nsh` skips the page that asks for all users or only for the current one). The uninstaller removes the program and keeps the data location and the app's own data. CI builds the Windows installer on every pull request, checks the packaged app, then installs it, checks the installed app and uninstalls it.
+
 ## Layout
 
 | File | What it does |
@@ -61,6 +75,8 @@ Never point `DS_BOT_HOME` at `~/.dsh` or at the data of an app that you use.
 | `src/web.mjs` | The window's files, the launch-token cookie exchange and the request forwarding |
 | `ui/` | The window: React, built with Vite (`vite.config.js`) into `ui/dist`. It draws the plugin's own Bot views from `../ds-bot/src/client/` (sidebar, chat rows, docks, dialogs and their stylesheets) and puts its own Markdown in place of DSH's. It uses ds-bot's `api/bot` channel and its live feed `api/bot/feed` |
 | `assets/` | The app icon: `icon.svg`, `icon.png` (1024 px) and `icon.ico` (Windows, 16 to 256 px). `npm run icon` (`scripts/icon.mjs`) draws them again from the Main Bot's whale in `../ds-bot` |
+| `electron-builder.yml`, `build/` | The package and the installer: app identity, files, icons, the Windows installer and the macOS disk image |
+| `scripts/check-packed.mjs` | `npm run check-packed`: the check of a packaged app |
 
 The Host installs plugins with the app's own pnpm (`node_modules/pnpm`).
 
