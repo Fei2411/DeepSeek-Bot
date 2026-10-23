@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh">
+<meta charset="utf-8">
+<title>DS Bot 长任务</title>
+<style>
+  body { margin:0; font:16px/1.5 Palatino,"Songti SC",serif; background:#f6f1e7; color:#1c1915; }
+  header { padding:32px 5vw; background:#231c14; color:#f6f1e7; }
+  h1 { margin:0 0 8px; font-size:32px; }
+  main { padding:18px 5vw 48px; }
+  table { width:100%; border-collapse:collapse; background:white; font-size:14px; }
+  th,td { border-bottom:1px solid #ddd4c4; padding:8px; text-align:right; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align:left; }
+  th { background:#efe7d8; }
+  .note { background:white; padding:12px 14px; margin-top:14px; }
+</style>
+<body>
+<header>
+  <h1>长任务：时间、步数、token</h1>
+  <p>DS Bot 里的 Chief 在做。模型是 OpenDesign 上的 deepseek-v4.1-flash。三题都做对了。差别在耗时和 token，不在过不过。</p>
+</header>
+<main>
+<table>
+<tr><th>任务</th><th>工具</th><th>时间</th><th>步数</th><th>模型耗时</th><th>浏览器耗时</th><th>输出 token</th><th>新输入 token</th><th>缓存读 token</th></tr>
+<tr><td rowspan="2">12 页账本。只加 due，得到 4159 和 39，并交回收据</td><td>Playwright MCP</td><td>36 秒</td><td>9</td><td>18.9 秒</td><td>2.2 秒</td><td>1597</td><td>3941</td><td>372224</td></tr>
+<tr><td>dsh-plugin-browser-use</td><td>40 秒</td><td>13</td><td>24.2 秒</td><td>0.5 秒</td><td>1680</td><td>2742</td><td>450688</td></tr>
+<tr><td rowspan="2">Sequential Art 四页 75 本书，总价 £2592.92</td><td>Playwright MCP</td><td>28 秒</td><td>4</td><td>10.4 秒</td><td>2.5 秒</td><td>1126</td><td>4282</td><td>179456</td></tr>
+<tr><td>dsh-plugin-browser-use</td><td>24 秒</td><td>4</td><td>9.7 秒</td><td>0.8 秒</td><td>961</td><td>1265</td><td>146688</td></tr>
+<tr><td rowspan="2">20 站各一个数，加总 848。墙上的 999 是错的</td><td>Playwright MCP</td><td>28 秒</td><td>5</td><td>11.7 秒</td><td>1.9 秒</td><td>1237</td><td>1778</td><td>247808</td></tr>
+<tr><td>dsh-plugin-browser-use</td><td>24 秒</td><td>5</td><td>9.7 秒</td><td>0.3 秒</td><td>629</td><td>967</td><td>192256</td></tr>
+</table>
+<div class="note">
+<p>步数是这一题里模型被调用的次数。时间是从发出题目到 Chief 答完。token 是这一题相对上一题的增量。</p>
+<p>缓存读 token 很大，因为这是同一个 Chief 接着前面的对话做，前面的上下文被重新读进来。新输入 token 才是这一题新写进上下文的部分。</p>
+<p>账本上 Playwright MCP 少 4 步，但浏览器调用更慢。书单和 20 站上，dsh-plugin-browser-use 的新输入和输出都更少，步数一样。</p>
+</div>
+</main>
+</html>

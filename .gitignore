@@ -18,6 +18,9 @@ node_modules/
 # Extra patterns for scripts/scan.mjs that must not be named in the repository.
 .scan-extra
 
+# Browser-plugin bench output (the HTML report is written beside it and committed).
+/browser-plugins/bench/out/
+
 # Local Docker deployment data.
 /docker/data/
 /docker/workspace/

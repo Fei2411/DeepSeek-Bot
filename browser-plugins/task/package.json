@@ -1,0 +1,11 @@
+{
+  "name": "ds-bot-browser-task",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DS Bot browser plugin: one goal runs the browser and returns the answer plus the steps. One profile per Bot.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "index.js",
+  "keywords": ["dsh-plugin", "browser"],
+  "dsh": {}
+}

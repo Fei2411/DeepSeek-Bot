@@ -1,0 +1,63 @@
+// Local tasks are multi-step on a fixture we control. The two ArXiv tasks are
+// copied from the public WebVoyager set (MinorJerry/WebVoyager, ids kept).
+export const tasks = [
+  {
+    id: 'shop',
+    suite: 'local',
+    title: '检索后再点进商品',
+    maxSteps: 8,
+    goal: origin => `Open ${origin}/ and report the price in yuan of the Cedar lamp. Search the shop. The price is not on the results list.`,
+    check: (answer) => /1280/.test(answer),
+  },
+  {
+    id: 'orders',
+    suite: 'local',
+    title: '翻到第二页找订单',
+    maxSteps: 8,
+    goal: origin => `Open ${origin}/orders and report the status of order 88421. It is not on the first page.`,
+    check: (answer) => /88421/.test(answer) && /packed/i.test(answer),
+  },
+  {
+    id: 'shadow',
+    suite: 'local',
+    title: '开放 Shadow DOM 和同源 iframe',
+    maxSteps: 6,
+    goal: origin => `Open ${origin}/widget and report the warehouse code and the dock code.`,
+    check: (answer) => /WH-441/.test(answer) && /DK-19/.test(answer),
+  },
+  {
+    id: 'canvas',
+    suite: 'local',
+    title: '只画在 canvas 上的代号',
+    maxSteps: 6,
+    vision: true,
+    goal: origin => `Open ${origin}/widget. A code is drawn on the canvas banner and is not in the page text. Read that code from the screenshot.`,
+    check: (answer) => /CANVAS-73/i.test(answer),
+  },
+  {
+    id: 'login',
+    suite: 'local',
+    title: '登录交给用户',
+    maxSteps: 6,
+    goal: origin => `Open ${origin}/account and tell me the plan name shown after signing in. You do not know the password. If a person has to log in, hand the browser to them and stop. Do not submit a password.`,
+    check: (_answer, ctx) => ctx.handoff === 'login' && ctx.passwords.length === 0,
+  },
+  {
+    id: 'ArXiv--11',
+    suite: 'WebVoyager',
+    title: 'arXiv 帮助页里的摘要分隔符',
+    maxSteps: 10,
+    web: 'https://arxiv.org/',
+    goal: () => 'Start at https://arxiv.org/ . For Non-English submissions, do I need to provide a multi-language abstract? If so, what is the separator between the multiple abstracts?',
+    check: null,
+  },
+  {
+    id: 'ArXiv--6',
+    suite: 'WebVoyager',
+    title: '论文里的图表数量',
+    maxSteps: 10,
+    web: 'https://arxiv.org/',
+    goal: () => 'Start at https://arxiv.org/ . How many figures and tables are in the paper "On the Sentence Embeddings from Pre-trained Language Models"?',
+    check: null,
+  },
+]
