@@ -23,13 +23,14 @@
 // memory section the first time it renders, so its prompt stays byte-stable and the
 // provider's prefix cache holds; a fresh part, or a checkpoint (which breaks the cache
 // anyway), freezes it anew.
-import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs'
 import { appendFile, mkdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { BlockAssembler } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { replaceFile } from './files.js'
+import { inside, pendingPath, read as readPending, record as pendingRecord, relativePath, serialize as serializePending } from './memory-pending.js'
 import { splitRef, unquote } from './text.js'
 import { speakerOf } from '../shared/mentions.js'
 import { output } from './tools.js'
@@ -453,6 +454,8 @@ export function install(rt) {
   const reviewOn = config.memoryReview !== false
   const root = join(home, 'memory')
   const journalPath = join(root, 'journal.jsonl')
+  // The half-written row of the change log, kept beside it as the evidence it is.
+  const tornPath = join(root, 'journal.torn')
   const dayFormat = new Intl.DateTimeFormat('en-CA', { ...(config.timeZone ? { timeZone: config.timeZone } : {}), year: 'numeric', month: '2-digit', day: '2-digit' })
   const today = () => dayFormat.format(Date.now())
 
@@ -510,16 +513,147 @@ export function install(rt) {
     await writeFile(temp, text, 'utf8')
     await replaceFile(temp, path)
   }
-  async function journal(record) {
-    await mkdir(root, { recursive: true })
-    await appendFile(journalPath, `${JSON.stringify({ time: new Date().toISOString(), ...record })}\n`, 'utf8')
-  }
   let writing = Promise.resolve()
   const queued = (job) => {
     const run = writing.then(job)
     writing = run.catch(() => {})
     return run
   }
+
+  // ---------------------------------------------------------------------------
+  // Publishing a change.
+  //
+  // A change touches more than one file (the entry, the Index that links a topic, the
+  // change log), and each of them is written on its own, so an interruption can leave
+  // half of it done: an entry without its row in the change log, a topic without its
+  // link. The record of what the change will do is written first, so the change can
+  // be finished later instead of being half done.
+  //
+  // The record is what accepts the change: before it is there, nothing has changed.
+  // It holds the files to write, the files to remove, and the row that goes with
+  // them in the change log, so finishing a change later is the same work as
+  // publishing it in the first place.
+
+  const writeStep = (path, text) => ({ action: 'write', path: relativePath(root, path), text })
+  const removeStep = path => ({ action: 'remove', path: relativePath(root, path) })
+
+  // The files of a change, in the order they are written.
+  async function applySteps(steps) {
+    for (const step of steps) {
+      const path = inside(root, step.path)
+      if (step.action === 'remove') await unlink(path).catch(error => { if (error?.code !== 'ENOENT') throw error })
+      else await writeText(path, step.text)
+    }
+  }
+
+  // The change log as it is. A log that cannot be read stops the memory: it is what
+  // says what was done.
+  function readJournal() {
+    try {
+      return readFileSync(journalPath, 'utf8')
+    } catch (error) {
+      if (error?.code === 'ENOENT') return ''
+      unreadable(journalPath, error)
+    }
+  }
+
+  // Whether the change log already holds the row of a change. Only a row that parses
+  // counts: a half-written row is not proof that anything was done.
+  function journalled(text, id) {
+    return text.split('\n').some(line => {
+      if (!line.includes(id)) return false
+      try { return JSON.parse(line)?.id === id } catch { return false }
+    })
+  }
+
+  // Whether a line of the change log is a whole row.
+  const whole = (line) => {
+    try {
+      const value = JSON.parse(line)
+      return value !== null && typeof value === 'object'
+    } catch {
+      return false
+    }
+  }
+
+  // The row of a change in the change log, written once: a change that is finished
+  // twice (after an interruption) does not get a second row. The row keeps the
+  // fields it always had, so a later undo can still read what each change replaced.
+  //
+  // The log can end in a half-written row, when a change was interrupted while its
+  // row was being appended. A half row is not proof that anything was done: it is
+  // kept beside the log as the evidence it is, the log is cut back to the rows that
+  // are whole, and the row after it starts on a line of its own.
+  async function journalRow(row) {
+    const text = readJournal()
+    if (journalled(text, row.id)) return false
+    const cut = text.lastIndexOf('\n') + 1
+    const half = text.slice(cut)
+    const line = JSON.stringify(row)
+    mkdirSync(root, { recursive: true })
+    if (half === '') {
+      await appendFile(journalPath, `${line}\n`, 'utf8')
+      return true
+    }
+    if (whole(half)) {
+      // A whole row that lost its newline: it is ended, and the row after it starts
+      // on a line of its own.
+      await appendFile(journalPath, `\n${line}\n`, 'utf8')
+      return true
+    }
+    await appendFile(tornPath, `${half}\n`, 'utf8')
+    truncateSync(journalPath, Buffer.byteLength(text.slice(0, cut), 'utf8'))
+    await appendFile(journalPath, `${line}\n`, 'utf8')
+    return true
+  }
+
+  // Publishes a change: the files it touches, then the row that goes with it in the
+  // change log. A change that cannot be published stays pending: the record is left
+  // behind, and the change is finished before memory is read or written again.
+  async function publish({ op, scope, steps, row }) {
+    const id = randomUUID()
+    const time = new Date().toISOString()
+    const record = pendingRecord({ id, time, op, scope, steps, row })
+    // The record has to be readable back, so its size is checked before the change
+    // is accepted: a record that cannot be read would stop the memory for good.
+    const text = serializePending(record)
+    await writeText(pendingPath(root), text)
+    try {
+      await applySteps(steps)
+      await journalRow(record.row)
+      await unlink(pendingPath(root)).catch(error => { if (error?.code !== 'ENOENT') throw error })
+    } catch (error) {
+      rt.warn('ds-bot: memory change %s is pending: %s', id, error)
+      throw error
+    }
+  }
+
+  // Finishes the changes that were interrupted: the files they touch, then the rows
+  // that go with them. A change that was already finished is not finished again, so
+  // its row is not written twice.
+  async function recoverPending() {
+    if (rt.readOnly() !== undefined) return
+    const record = readPending(root)
+    if (record === undefined) return
+    await applySteps(record.steps)
+    await journalRow(record.row)
+    await unlink(pendingPath(root)).catch(error => { if (error?.code !== 'ENOENT') throw error })
+  }
+
+  // The recovery runs in the writer's line, so it never runs beside a change that is
+  // being published.
+  const recover = () => queued(recoverPending)
+  // A read waits for the writer's line, so it reads files that are whole.
+  const settled = (read) => queued(async () => {
+    await recoverPending()
+    return read()
+  })
+
+  // A change that was interrupted is finished when the host starts.
+  ctx.effect(() => {
+    void rt.load().then(() => recover()).catch(error => rt.warn('ds-bot: memory recovery failed: %s', error?.message ?? error))
+  }, 'ds-bot: memory recovery')
+
   // Checked when the write runs: a Bot or group chat deleted after the write was
   // queued has its memory archived already, and writing would bring the folder back;
   // nor does a deleted Bot write the team memory, or one no longer Main Bot or group
@@ -605,6 +739,7 @@ export function install(rt) {
 
   function addEntry({ scope, topic, text, meta, actor, label }) {
     return queued(async () => {
+      await recoverPending()
       writable(scope, actor)
       const files = loadScope(scope)
       const [same] = matchEntries(allEntries(files), text).filter(entry => squash(entry.text) === squash(text))
@@ -625,9 +760,9 @@ export function install(rt) {
         index = joinLines(addLink(main.lines.length > 0 ? main.lines : parseMemory(EMPTY_MAIN).lines, topic))
         checkSize(main, index, label)
       }
-      await writeText(target.path, next)
-      if (index !== undefined) await writeText(main.path, index)
-      await journal({ op: 'add', scope: scopeKey(scope), file: target.file, ...actorOf(actor), after: line })
+      const steps = [writeStep(target.path, next)]
+      if (index !== undefined) steps.push(writeStep(main.path, index))
+      await publish({ op: 'add', scope: scopeKey(scope), steps, row: { op: 'add', scope: scopeKey(scope), file: target.file, ...actorOf(actor), after: line } })
       noteNews(scope, actor, 'add', line)
       const where = topic === undefined ? MAIN : fresh ? `the new topic [[${topic}]], linked from MEMORY.md` : `topic [[${topic}]]`
       return { changed: true, file: target, message: `Saved to ${label}, in ${where} (${sizeNote(target, next.length)}).` }
@@ -649,6 +784,7 @@ export function install(rt) {
   // The entry keeps its place; `topic` only narrows where to look.
   function replaceEntry({ scope, topic, match, text, meta, actor, label }) {
     return queued(async () => {
+      await recoverPending()
       writable(scope, actor)
       const old = findOne(loadScope(scope), topic, match, label)
       const line = formatEntry(text, meta)
@@ -657,8 +793,12 @@ export function install(rt) {
       lines[old.line] = line
       const next = joinLines(lines)
       checkSize(old.file, next, label)
-      await writeText(old.file.path, next)
-      await journal({ op: 'replace', scope: scopeKey(scope), file: old.file.file, ...actorOf(actor), before, after: line })
+      await publish({
+        op: 'replace',
+        scope: scopeKey(scope),
+        steps: [writeStep(old.file.path, next)],
+        row: { op: 'replace', scope: scopeKey(scope), file: old.file.file, ...actorOf(actor), before, after: line },
+      })
       noteNews(scope, actor, 'replace', line)
       return { changed: true, file: old.file, message: `Updated in ${label} (${fileName(old.file)}): "${old.text}" is now "${text}".` }
     })
@@ -666,6 +806,7 @@ export function install(rt) {
 
   function removeEntry({ scope, topic, match, actor, label }) {
     return queued(async () => {
+      await recoverPending()
       writable(scope, actor)
       const files = loadScope(scope)
       const old = findOne(files, topic, match, label)
@@ -673,14 +814,20 @@ export function install(rt) {
       const lines = old.file.lines.filter((_line, index) => index !== old.line)
       // A topic left with nothing but its title goes, and so does its link.
       const empty = old.file.topic !== undefined && lines.every(line => line.trim() === '' || HEADING.test(line))
+      const steps = []
       if (empty) {
-        await unlink(old.file.path).catch(error => { if (error?.code !== 'ENOENT') throw error })
+        steps.push(removeStep(old.file.path))
         const main = files[0]
-        if (main.links.includes(old.file.topic)) await writeText(main.path, joinLines(removeLink(main.lines, old.file.topic)))
+        if (main.links.includes(old.file.topic)) steps.push(writeStep(main.path, joinLines(removeLink(main.lines, old.file.topic))))
       } else {
-        await writeText(old.file.path, joinLines(lines))
+        steps.push(writeStep(old.file.path, joinLines(lines)))
       }
-      await journal({ op: 'remove', scope: scopeKey(scope), file: old.file.file, ...actorOf(actor), before, ...(empty ? { removedTopic: true } : {}) })
+      await publish({
+        op: 'remove',
+        scope: scopeKey(scope),
+        steps,
+        row: { op: 'remove', scope: scopeKey(scope), file: old.file.file, ...actorOf(actor), before, ...(empty ? { removedTopic: true } : {}) },
+      })
       noteNews(scope, actor, 'remove', before)
       return { changed: true, file: old.file, message: `Removed from ${label} (${fileName(old.file)}): "${old.text}", all of it, so save again with remember any part that is still true. The change log keeps a copy.${empty ? ` The topic [[${old.file.topic}]] was empty, so it is gone too.` : ''}` }
     })
@@ -694,13 +841,15 @@ export function install(rt) {
     news.delete(botId)
     return queued(async () => {
       if (rt.readOnly() !== undefined) return
+      // A change that was interrupted is finished first, so the archive holds it.
+      await recoverPending()
       await unlink(join(root, 'summaries', `${safeId(botId)}.json`)).catch(() => {})
       const dir = dirOf(ownScope(botId))
       if (!existsSync(dir)) return
       const name = `${safeId(botId)}-${new Date().toISOString().replace(/[:.]/g, '-')}`
       await mkdir(join(root, 'archive'), { recursive: true })
       await rename(dir, join(root, 'archive', name))
-      await journal({ op: 'archive', scope: scopeKey(ownScope(botId)), actor: 'user', actorName: 'user', botName: bot?.name, to: `archive/${name}` })
+      await journalRow({ id: randomUUID(), time: new Date().toISOString(), op: 'archive', scope: scopeKey(ownScope(botId)), actor: 'user', actorName: 'user', botName: bot?.name, to: `archive/${name}` })
     }).catch(error => rt.warn('ds-bot: memory of %s not archived: %s', bot?.name ?? botId, error))
   }
 
@@ -713,13 +862,15 @@ export function install(rt) {
     news.delete(room.id)
     return queued(async () => {
       if (rt.readOnly() !== undefined) return
+      // A change that was interrupted is finished first, so the archive holds it.
+      await recoverPending()
       await unlink(summaryPath(room.id)).catch(() => {})
       const dir = dirOf(groupScope(room.id))
       if (!existsSync(dir)) return
       const name = `group-${safeId(room.id)}-${new Date().toISOString().replace(/[:.]/g, '-')}`
       await mkdir(join(root, 'archive'), { recursive: true })
       await rename(dir, join(root, 'archive', name))
-      await journal({ op: 'archive', scope: scopeKey(groupScope(room.id)), actor: 'user', actorName: 'user', groupName: room.name, to: `archive/${name}` })
+      await journalRow({ id: randomUUID(), time: new Date().toISOString(), op: 'archive', scope: scopeKey(groupScope(room.id)), actor: 'user', actorName: 'user', groupName: room.name, to: `archive/${name}` })
     }).catch(error => rt.warn('ds-bot: memory of group %s not archived: %s', room.name, error))
   }
 
@@ -792,6 +943,18 @@ export function install(rt) {
     }
   }
 
+  // A change that was interrupted is finished before memory is read again. Until it
+  // is, the section is not frozen, so the next render reads the finished state; a
+  // record that cannot be read stops the memory, as an unreadable file does.
+  function pendingChange() {
+    try {
+      return { pending: readPending(root) !== undefined }
+    } catch (error) {
+      rt.warn('ds-bot: %s', error?.message ?? error)
+      return { failed: true }
+    }
+  }
+
   /** @type {Map<string, string>} */
   const frozen = new Map()
   const snapshotPath = sessionId => join(root, 'snapshots', `${safeId(sessionId)}.md`)
@@ -807,18 +970,19 @@ export function install(rt) {
     const holds = text => marks.every(mark => text.includes(mark))
     const kept = frozen.get(sessionId)
     if (kept !== undefined && holds(kept)) return kept
+    const pending = pendingChange()
     const path = snapshotPath(sessionId)
     const snap = existsSync(path) ? sectionRead(path) : { text: '' }
     let text = snap.text
     // A render that could not read everything is used but not kept: it is written
     // down neither as the snapshot nor as the frozen copy, so the next render tries
     // the files again.
-    let failed = snap.failed !== undefined
+    let failed = snap.failed !== undefined || pending.failed === true
     if (text === '' || !holds(text)) {
       const section = memorySection(bot, roomId)
       text = section.text
       failed = failed || section.failed
-      if (!failed && rt.readOnly() === undefined) {
+      if (!failed && rt.readOnly() === undefined && pending.pending !== true) {
         try {
           mkdirSync(dirname(path), { recursive: true })
           writeFileSync(`${path}.tmp`, text, 'utf8')
@@ -828,7 +992,8 @@ export function install(rt) {
         }
       }
     }
-    if (!failed) frozen.set(sessionId, text)
+    if (!failed && pending.pending !== true) frozen.set(sessionId, text)
+    if (pending.pending === true) void recover().catch(error => rt.warn('ds-bot: memory recovery failed: %s', error?.message ?? error))
     return text
   }
   // The Session's next render freezes the memory as it is then.
@@ -988,7 +1153,7 @@ export function install(rt) {
       if (error) return error
       let loaded
       try {
-        loaded = scopes.map(scope => ({ scope, tag: tagOf(scope, self), label: labelOf(scope, self), files: loadScope(scope) }))
+        loaded = await settled(() => scopes.map(scope => ({ scope, tag: tagOf(scope, self), label: labelOf(scope, self), files: loadScope(scope) })))
       } catch (failure) {
         return failure.message
       }
@@ -1154,9 +1319,9 @@ export function install(rt) {
   // The summary is written again when the entries or the interface language change;
   // a failed one waits for `regenerate`, or a new model for the keeper, instead of
   // retrying on every poll.
-  function memoryView(body) {
+  async function memoryView(body) {
     const panel = panelOf(body)
-    const loaded = Object.fromEntries(Object.entries(panel.scopes).map(([tag, scope]) => [tag, loadScope(scope)]))
+    const loaded = await settled(() => Object.fromEntries(Object.entries(panel.scopes).map(([tag, scope]) => [tag, loadScope(scope)])))
     const entries = Object.entries(loaded).flatMap(([tag, files]) => panelEntries(files, tag))
     const language = languageNow()
     const hash = createHash('sha256').update(JSON.stringify([language, ...Object.values(loaded).map(linesFor)])).digest('hex')
@@ -1182,7 +1347,7 @@ export function install(rt) {
     if (panel.keeper === undefined) throw new Error('No Bot is left in this group chat')
     const text = String(body.text ?? '').trim().slice(0, ASK_TEXT_MAX)
     if (text === '') throw new Error('Type a question or a change first')
-    const numbered = Object.entries(panel.scopes).flatMap(([tag, scope]) => allEntries(loadScope(scope)).map(entry => ({ ...entry, scope: tag })))
+    const numbered = await settled(() => Object.entries(panel.scopes).flatMap(([tag, scope]) => allEntries(loadScope(scope)).map(entry => ({ ...entry, scope: tag }))))
     const answer = parseAsk(await botShot(panel.keeper, askSystem(panel.group), askRequest({ name: panel.name, group: panel.group, numbered, language: languageNow(), text }), panel.tag))
     const meta = { source: 'memory panel', by: 'user', added: today() }
     const home = panel.group ? 'group' : 'own'
@@ -1209,7 +1374,7 @@ export function install(rt) {
         changes.push({ op, scope: tag, text: next || target?.text || '', ok: false, error: failure.message })
       }
     }
-    return { reply: answer.reply, changes, view: memoryView(panelBody(panel)) }
+    return { reply: answer.reply, changes, view: await memoryView(panelBody(panel)) }
   }
 
   // One entry the user removes from the list.
@@ -1218,7 +1383,7 @@ export function install(rt) {
     const scope = panel.scopes[body.scope] ?? panel.scopes[panel.group ? 'group' : 'own']
     const topic = body.topic === null || body.topic === undefined ? undefined : cleanTopic(body.topic)
     await removeEntry({ scope, topic, match: String(body.text ?? ''), actor: USER, label: panelLabel(panel, scope) })
-    return memoryView(panelBody(panel))
+    return await memoryView(panelBody(panel))
   }
 
   // ---------------------------------------------------------------------------
@@ -1433,8 +1598,7 @@ export function install(rt) {
     }
     // Only the user's words are kept, so lines without any need no model call.
     if (read.some(line => line.who === 'user')) {
-      const homeFiles = loadScope(home)
-      const teamFiles = loadScope(TEAM)
+      const { homeFiles, teamFiles } = await settled(() => ({ homeFiles: loadScope(home), teamFiles: loadScope(TEAM) }))
       const said = read.filter(line => line.who === 'user').map(line => line.text).join('\n')
       const tagged = group ? 'group' : 'own'
       const { numbered, left } = reviewEntries(homeFiles, teamFiles, REVIEW_MEMORY_MAX, said, tagged)

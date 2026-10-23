@@ -76,6 +76,7 @@ test('apply registers listeners, tools, and effects in a fixed order', (t) => {
     'on agent/inbox/discarded',
     'on session/event',
     'effect ds-bot: resume interrupted turns',
+    'effect ds-bot: memory recovery',
     'effect ds-bot: memory section',
     'prompt bot-memory 645',
     'tool remember',
