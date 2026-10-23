@@ -330,18 +330,69 @@ function GroupEvent({ prefix, room, name, roster, actions }) {
       : name ? h('span', null, name) : null)
 }
 
-// A change remember or forget made, which opens the memory it changed. Refusals and
-// entries already saved changed nothing and show no line.
-function MemoryEvent({ sessionId, scope, result, roster, actions, findBot }) {
-  if (!/^(Saved to|Updated in|Removed from) /.test(result)) return null
+// The results a memory write answers with when it changed the memory, and the
+// one that says the entry was there already.
+const MEMORY_SAVED = /^(Saved to|Updated in|Removed from) /
+const MEMORY_ALREADY = /^Already in /
+
+// The words the memory tools take for a scope.
+const MEMORY_TEAM = /^(team|团队|共享)$/i
+const MEMORY_OWN = /^(own|me|mine|self|yours?|自己|我)$/i
+const MEMORY_GROUP = /^(group|this group|群|本群|群聊)$/i
+
+// Why a memory write changed nothing, in the interface language. The host's own
+// words stay in the tool record: they can name the entries that were asked
+// about, and the notice does not repeat them.
+function memoryFailure(code) {
+  if (!code) return undefined
+  switch (code) {
+    case 'memory/empty': return t('Write something to save')
+    case 'memory/no-match': return t('No saved entry matched')
+    case 'memory/refused':
+    case 'memory/denied': return t('The memory refused this change')
+    // A write that broke, and any failure this interface does not know.
+    default: return t('The memory could not be changed')
+  }
+}
+
+// A change remember or forget made, which opens the memory it changed. A
+// refusal and a write that failed changed nothing, and say so, with the way
+// into the memory panel.
+function MemoryEvent({ sessionId, scope, tool, result, failed, code, roster, actions, findBot }) {
   const self = roster.byId[sessionId]
-  const team = /^(team|团队|共享)$/i.test(String(scope ?? '').trim())
-  const other = team || !scope ? undefined : findBot(scope)
+  const room = roster.roomsById[sessionId]
+  const named = String(scope ?? '').trim()
+  const team = MEMORY_TEAM.test(named)
+  const other = team || named === '' ? undefined : findBot(named)
   const target = other && other.id !== self?.id ? other : self
-  if (!target) return null
-  const label = team ? t('Team memory updated') : target === self ? t('Memory updated') : t("Updated {name}'s memory", { name: target.name })
-  return h('div', { className: 'bt-event' },
-    h('button', { type: 'button', title: result, onClick: () => actions.openMemory(target.id) }, h(MemoryIcon), label))
+  // The panel that shows the memory: the Bot's own, the group's in a group chat,
+  // or none when the scope names a Bot that is not there.
+  const panel = team ? self?.id
+    : MEMORY_OWN.test(named) ? self?.id
+      : MEMORY_GROUP.test(named) ? room?.id
+        : named === '' ? (room?.id ?? self?.id)
+          : other?.id
+  if (!failed && MEMORY_ALREADY.test(result)) {
+    // The entry was there already: a quiet line, and the panel shows it.
+    return h('div', { className: 'bt-event' },
+      panel === undefined ? h('span', null, h(MemoryIcon), t('Already saved')) : h('button', { type: 'button', onClick: () => actions.openMemory(panel) }, h(MemoryIcon), t('Already saved')))
+  }
+  if (!failed && MEMORY_SAVED.test(result)) {
+    if (!target) return null
+    const label = team ? t('Team memory updated') : target === self ? t('Memory updated') : t("Updated {name}'s memory", { name: target.name })
+    return h('div', { className: 'bt-event' },
+      h('button', { type: 'button', title: result, onClick: () => actions.openMemory(target.id) }, h(MemoryIcon), label))
+  }
+  // Nothing was saved. The reason is a short line of our own; what the host
+  // said stays in the tool record.
+  const reason = memoryFailure(code)
+  const label = failed
+    ? (tool === 'forget' ? t("Couldn't remove from memory") : t("Couldn't save to memory"))
+    : t('Memory not changed')
+  return h('div', { className: 'bt-event bt-event-error', role: 'status', title: code },
+    h('span', null, h(MemoryIcon), label),
+    reason ? h('span', null, ` · ${reason}`) : null,
+    panel === undefined ? null : h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => actions.openMemory(panel) }, t('Manage')))
 }
 
 function PartLine({ time }) {
@@ -946,7 +997,7 @@ function renderCall(call, { sessionId, roster, actions, useUi, useWork, findBot,
     }
     case 'remember':
     case 'forget':
-      return done && !call.isError ? h(MemoryEvent, { sessionId, scope: arg('scope'), result: contentText(call.content), roster, actions, findBot }) : null
+      return done ? h(MemoryEvent, { sessionId, scope: arg('scope'), tool, result: contentText(call.content), failed: call.isError === true, code: call.error?.code, roster, actions, findBot }) : null
     default:
       return null
   }

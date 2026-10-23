@@ -751,6 +751,14 @@ var ZH = {
   "Updating memory": "正在更新记忆",
   "Checking memory": "正在查看记忆",
   "Memory updated": "记忆已更新",
+  "Already saved": "已经保存过了",
+  "Couldn't save to memory": "没能保存到记忆",
+  "Couldn't remove from memory": "没能从记忆里删除",
+  "Memory not changed": "记忆没有变化",
+  "Write something to save": "请写下要保存的内容",
+  "No saved entry matched": "没有匹配的记忆条目",
+  "The memory refused this change": "记忆没有接受这次改动",
+  "The memory could not be changed": "记忆没能改动",
   "New terminal": "新建终端",
   "Team memory updated": "团队记忆已更新",
   "Updated {name}'s memory": "已更新 {name} 的记忆",
@@ -7434,18 +7442,58 @@ function GroupEvent({ prefix, room: room2, name, roster, actions }) {
     room2 ? (0, import_react12.createElement)("button", { type: "button", onClick: () => actions.openSession(room2.id) }, (0, import_react12.createElement)(RoomAvatar, { room: room2, roster, size: 16 }), room2.name) : name ? (0, import_react12.createElement)("span", null, name) : null
   );
 }
-function MemoryEvent({ sessionId, scope, result, roster, actions, findBot }) {
-  if (!/^(Saved to|Updated in|Removed from) /.test(result)) return null;
+var MEMORY_SAVED = /^(Saved to|Updated in|Removed from) /;
+var MEMORY_ALREADY = /^Already in /;
+var MEMORY_TEAM = /^(team|团队|共享)$/i;
+var MEMORY_OWN = /^(own|me|mine|self|yours?|自己|我)$/i;
+var MEMORY_GROUP = /^(group|this group|群|本群|群聊)$/i;
+function memoryFailure(code) {
+  if (!code) return void 0;
+  switch (code) {
+    case "memory/empty":
+      return t("Write something to save");
+    case "memory/no-match":
+      return t("No saved entry matched");
+    case "memory/refused":
+    case "memory/denied":
+      return t("The memory refused this change");
+    // A write that broke, and any failure this interface does not know.
+    default:
+      return t("The memory could not be changed");
+  }
+}
+function MemoryEvent({ sessionId, scope, tool, result, failed, code, roster, actions, findBot }) {
   const self = roster.byId[sessionId];
-  const team = /^(team|团队|共享)$/i.test(String(scope ?? "").trim());
-  const other = team || !scope ? void 0 : findBot(scope);
+  const room2 = roster.roomsById[sessionId];
+  const named = String(scope ?? "").trim();
+  const team = MEMORY_TEAM.test(named);
+  const other = team || named === "" ? void 0 : findBot(named);
   const target = other && other.id !== self?.id ? other : self;
-  if (!target) return null;
-  const label = team ? t("Team memory updated") : target === self ? t("Memory updated") : t("Updated {name}'s memory", { name: target.name });
+  const panel = team ? self?.id : MEMORY_OWN.test(named) ? self?.id : MEMORY_GROUP.test(named) ? room2?.id : named === "" ? room2?.id ?? self?.id : other?.id;
+  if (!failed && MEMORY_ALREADY.test(result)) {
+    return (0, import_react12.createElement)(
+      "div",
+      { className: "bt-event" },
+      panel === void 0 ? (0, import_react12.createElement)("span", null, (0, import_react12.createElement)(MemoryIcon), t("Already saved")) : (0, import_react12.createElement)("button", { type: "button", onClick: () => actions.openMemory(panel) }, (0, import_react12.createElement)(MemoryIcon), t("Already saved"))
+    );
+  }
+  if (!failed && MEMORY_SAVED.test(result)) {
+    if (!target) return null;
+    const label2 = team ? t("Team memory updated") : target === self ? t("Memory updated") : t("Updated {name}'s memory", { name: target.name });
+    return (0, import_react12.createElement)(
+      "div",
+      { className: "bt-event" },
+      (0, import_react12.createElement)("button", { type: "button", title: result, onClick: () => actions.openMemory(target.id) }, (0, import_react12.createElement)(MemoryIcon), label2)
+    );
+  }
+  const reason = memoryFailure(code);
+  const label = failed ? tool === "forget" ? t("Couldn't remove from memory") : t("Couldn't save to memory") : t("Memory not changed");
   return (0, import_react12.createElement)(
     "div",
-    { className: "bt-event" },
-    (0, import_react12.createElement)("button", { type: "button", title: result, onClick: () => actions.openMemory(target.id) }, (0, import_react12.createElement)(MemoryIcon), label)
+    { className: "bt-event bt-event-error", role: "status", title: code },
+    (0, import_react12.createElement)("span", null, (0, import_react12.createElement)(MemoryIcon), label),
+    reason ? (0, import_react12.createElement)("span", null, ` · ${reason}`) : null,
+    panel === void 0 ? null : (0, import_react12.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: () => actions.openMemory(panel) }, t("Manage"))
   );
 }
 function PartLine({ time }) {
@@ -8047,7 +8095,7 @@ function renderCall(call2, { sessionId, roster, actions, useUi, useWork, findBot
     }
     case "remember":
     case "forget":
-      return done && !call2.isError ? (0, import_react12.createElement)(MemoryEvent, { sessionId, scope: arg("scope"), result: contentText(call2.content), roster, actions, findBot }) : null;
+      return done ? (0, import_react12.createElement)(MemoryEvent, { sessionId, scope: arg("scope"), tool, result: contentText(call2.content), failed: call2.isError === true, code: call2.error?.code, roster, actions, findBot }) : null;
     default:
       return null;
   }
