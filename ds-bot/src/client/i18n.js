@@ -319,6 +319,22 @@ const ZH = {
   'Search still finds it.': '仍然可以搜索到。',
   Manage: '管理',
 
+  // Avatar library
+  Library: '头像库',
+  'Import photos': '导入照片',
+  'Importing photos…': '正在导入照片…',
+  'No photos in the library yet.': '头像库还是空的。',
+  'Use this photo': '用这张照片',
+  'Remove photo from the library': '从头像库移除这张照片',
+  '1 photo imported': '已导入 1 张照片',
+  '{count} photos imported': '已导入 {count} 张照片',
+  '1 photo was already in the library': '有 1 张照片已经在头像库里',
+  '{count} photos were already in the library': '有 {count} 张照片已经在头像库里',
+  '{name}: {reason}': '{name}：{reason}',
+  photo: '照片',
+  'Show more photos': '显示更多照片',
+  'Showing {shown} of {total} photos': '显示 {shown} / {total} 张照片',
+
   // Group chat settings
   'Leave it empty to name the group after its members.': '留空就按成员命名。',
   'Every member reads it before speaking in this group.': '每位成员在这个群里发言前都会读到。',
@@ -1005,6 +1021,9 @@ const HOST_ERRORS = [
   [/^GitHub answered (\d+)$/, 'GitHub 返回了 $1'],
   [/^Keep the name under (\d+) characters$/, '名字不能超过 $1 个字'],
   [/^Give the full path of the folder, not (.+)$/, '请填写文件夹的完整路径，而不是 $1'],
+  [/^The avatar library holds at most (\d+) photos\.$/, '头像库最多放 $1 张照片'],
+  [/^The avatar must be a PNG, JPEG, WebP, or GIF image\. Use a square image; 256x256 is recommended\.$/, '头像必须是 PNG、JPEG、WebP 或 GIF 图片。建议用正方形图片，256x256。'],
+  [/^The avatar image is too large: .+$/, '头像图片太大了'],
   [/^There is no folder at (.+)$/, '找不到文件夹 $1'],
   [/^(.+) is a file, not a folder$/, '$1 是文件，不是文件夹'],
   [/^(.+) holds DeepSeek Harness data, so Bots cannot work there$/, '$1 里有 DeepSeek Harness 的数据，Bot 不能在这里工作'],

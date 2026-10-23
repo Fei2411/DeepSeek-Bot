@@ -90,7 +90,7 @@ export function install(rt) {
   })
   // What a host that only reads the team may still answer.
   // Updates change the dsh profile, not the team, so a reading host may run them too.
-  const READS = new Set(['state', 'models', 'efforts', 'providers', 'provider-models', 'earlier', 'chat', 'run-stats', 'room-progress', 'exchange', 'exchange-text', 'file-text', 'usage', 'schedules', 'memory-view', 'browser-wait', 'browser-result', 'diagnostics', 'diagnostics-log', 'diagnostics-clear', 'update-check', 'update-install', 'dsh-update-install', 'repo-stars', 'approval-answer', 'thinking'])
+  const READS = new Set(['state', 'models', 'efforts', 'providers', 'provider-models', 'earlier', 'chat', 'run-stats', 'room-progress', 'exchange', 'exchange-text', 'file-text', 'usage', 'schedules', 'memory-view', 'browser-wait', 'browser-result', 'diagnostics', 'diagnostics-log', 'diagnostics-clear', 'update-check', 'update-install', 'dsh-update-install', 'repo-stars', 'approval-answer', 'thinking', 'avatar-library'])
 
   function setPrefs(body) {
     if (body.theme !== undefined) {
@@ -227,6 +227,16 @@ export function install(rt) {
         case 'update-bot':
           await rt.load()
           return ok(await rt.updateBot(body.id, body))
+        // The avatar library: photos the user imported once, kept beside the team.
+        case 'avatar-library':
+          await rt.load()
+          return ok(await rt.avatarLibraryView({ offset: body.offset, limit: body.limit }))
+        case 'avatar-import':
+          await rt.load()
+          return ok(await rt.avatarLibraryImport(Array.isArray(body.items) ? body.items : []))
+        case 'avatar-delete':
+          await rt.load()
+          return ok(await rt.avatarLibraryDelete(String(body.id ?? '')))
         case 'delete-bot':
           await rt.load()
           await rt.deleteBot(body.id)

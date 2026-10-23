@@ -8,34 +8,12 @@ import { ModelMenu, modelOf } from './model-menu.js'
 import { FolderMenu } from './folder-menu.js'
 import { BotSchedules } from './schedules.js'
 import { BotCapabilitiesCard } from './capability-settings.js'
+import { AvatarLibraryPanel, avatarImage } from './avatar-library.js'
 import { useMemoryCount } from './memory-panel.js'
 import { SPRING_SHAPE, SPRING_TAP, spring, useGlide } from './motion.js'
 import { t } from './i18n.js'
 
 const capitalize = word => word[0].toUpperCase() + word.slice(1)
-
-// Uploaded avatars are center-cropped to a small square so state.json stays light.
-export async function avatarImage(file) {
-  if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type)) throw new Error(t('Choose a PNG, JPEG, WebP, or GIF image'))
-  if (file.size > 25 * 1024 * 1024) throw new Error(t('Choose an image smaller than 25 MB'))
-  const bitmap = await createImageBitmap(file)
-  const side = 160
-  const canvas = document.createElement('canvas')
-  canvas.width = side
-  canvas.height = side
-  const context = canvas.getContext('2d')
-  context.imageSmoothingQuality = 'high'
-  const crop = Math.min(bitmap.width, bitmap.height)
-  context.drawImage(bitmap, (bitmap.width - crop) / 2, (bitmap.height - crop) / 2, crop, crop, 0, 0, side, side)
-  bitmap.close?.()
-  for (const quality of [0.9, 0.75, 0.6]) {
-    const url = canvas.toDataURL('image/webp', quality)
-    if (url.startsWith('data:image/webp') && url.length < 150000) return url
-  }
-  const png = canvas.toDataURL('image/png')
-  if (png.length < 150000) return png
-  throw new Error(t('That image is too large'))
-}
 
 // Settings save on blur or Enter, with no Save button; Escape puts the
 // saved value back. A required field never saves empty.
@@ -119,7 +97,8 @@ export function CharacterGrid({ look, hasPhoto = false, onShape, onColor }) {
 }
 
 // The avatar editor: the Bot tab picks a character (every click saves), the
-// Upload tab takes a photo, and Reset returns to the look the Bot id gives.
+// Upload tab takes a photo, the Library tab picks one the user imported before, and
+// Reset returns to the look the Bot id gives.
 function AvatarEditor({ bot, actions, run, onClose }) {
   const look = lookOf(bot)
   const [tab, setTab] = useState(look.image ? 'upload' : 'bot')
@@ -154,7 +133,7 @@ function AvatarEditor({ bot, actions, run, onClose }) {
     h('div', { className: 'bt-avedit-top' },
       h('div', { ref: glide.box, role: 'tablist', 'aria-label': t('Avatar source'), className: 'bt-avedit-tabs' },
         h('span', { ref: glide.thumb, className: 'bt-thumb', 'aria-hidden': true }),
-        [['bot', 'Bot'], ['upload', 'Upload']].map(([id, label]) => h('button', { key: id, type: 'button', role: 'tab', className: 'bt-avedit-tab', 'aria-selected': tab === id, onClick: () => setTab(id) }, t(label)))),
+        [['bot', 'Bot'], ['upload', 'Upload'], ['library', 'Library']].map(([id, label]) => h('button', { key: id, type: 'button', role: 'tab', className: 'bt-avedit-tab', 'aria-selected': tab === id, onClick: () => setTab(id) }, t(label)))),
       h('button', {
         type: 'button', className: 'bt-avedit-tab bt-avedit-reset', title: t('Reset character to default'),
         onClick: () => run(actions.updateBot(bot.id, { avatar: null, color: null })),
@@ -175,7 +154,13 @@ function AvatarEditor({ bot, actions, run, onClose }) {
     h('div', { className: 'bt-actions', style: { justifyContent: 'center' } },
       h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => fileRef.current?.click() }, hasPhoto ? t('Replace') : t('Browse files')),
       hasPhoto ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => run(actions.updateBot(bot.id, { avatar: hasShape(bot.avatar?.shape) ? { shape: bot.avatar.shape } : null })) }, t('Remove photo')) : null),
-    h('input', { ref: fileRef, type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', hidden: true, onChange: (event) => { const file = event.target.files?.[0]; event.target.value = ''; upload(file) } })) : null)
+    h('input', { ref: fileRef, type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', hidden: true, onChange: (event) => { const file = event.target.files?.[0]; event.target.value = ''; upload(file) } })) : null,
+    // A photo from the library is the same photo the user uploaded before: the Bot
+    // keeps its own copy, and the library keeps its entry.
+    tab === 'library' ? h(AvatarLibraryPanel, {
+      actions,
+      onPick: entry => run(actions.updateBot(bot.id, { avatar: { ...bot.avatar, image: entry.image } })),
+    }) : null)
 }
 
 function MemoryCard({ bot, actions }) {

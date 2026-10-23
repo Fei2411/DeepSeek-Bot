@@ -197,6 +197,7 @@ Files in `bot/`:
 | `usage.sqlite` | Token counts for the Usage page; rebuilt from the Session logs if deleted, losing only the calls outside the logs and the names of deleted Bots |
 | `memory/` | Memory (see [Memory](#memory)): `bots/<id>/`, `groups/<id>/` and `team/` (`MEMORY.md` and topics), `journal.jsonl` (every change), `snapshots/` (the section each Session froze), `summaries/` (the panel's summary; safe to delete), `reviewed.json` (how far the memory review has read) and `archive/` (deleted Bots and group chats) |
 | `ocr.json` | Cache of image text; safe to delete |
+| `avatars/` | The avatar library: the profile photos you imported once, so several Bots can use the same picture. `index.json` lists them, `files/` holds the images, each named by the hash of its bytes, so the same photo is stored once. The Bots that use a photo keep their own copy. Safe to delete. |
 | `workspace` | The team workspace: the working folder of every Bot without one of its own (`config.workspace` changes it) |
 | `secrets.json` | Saved secrets. Treat backups of it like passwords. |
 | `logs/diagnostics.jsonl` | Recent errors and warnings, with keys, tokens, saved secrets and the home folder removed. It moves to `diagnostics.jsonl.1` past 1 MB. Safe to delete. |

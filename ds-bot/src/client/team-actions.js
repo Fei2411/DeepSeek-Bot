@@ -53,6 +53,10 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     closeMenu: () => { ui.set(state => (state.menu ? { ...state, menu: null } : state)) },
     closeOverlay: () => { ui.set(state => ({ ...state, newChat: null, exchange: null, details: state.newChat || state.exchange ? state.details : null })) },
     createBot: payload => after(call('create-bot', payload)),
+    // The avatar library: photos the user imported once, kept by the host.
+    avatarLibrary: (options = {}) => call('avatar-library', options),
+    importAvatars: items => call('avatar-import', { items }),
+    deleteAvatar: id => call('avatar-delete', { id }),
     createRoom: (members, options = {}) => after(call('create-room', { members, ...options })),
     updateBot: (id, patch) => after(call('update-bot', { id, ...patch })),
     refreshModels: () => after(call('models')).catch(() => {}),

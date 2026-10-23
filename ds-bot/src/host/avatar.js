@@ -81,7 +81,14 @@ function readDataUrl(value) {
   if (payload === '' || payload.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(payload)) {
     throw new Error('The avatar data URL does not hold valid base64 image data.')
   }
-  return toDataUrl(Buffer.from(payload, 'base64'))
+  const bytes = Buffer.from(payload, 'base64')
+  return { url: toDataUrl(bytes), bytes, mime: mimeOf(bytes) }
+}
+
+// The image behind an avatar data URL: the bytes, the type they really are, and the
+// canonical data URL. The same checks as for a Bot's own avatar apply.
+export function avatarBytes(value) {
+  return readDataUrl(String(value ?? ''))
 }
 
 // Returns the data URL for avatar.image, or throws with a line the user can read.
@@ -91,7 +98,7 @@ function readDataUrl(value) {
 export async function readAvatar(input, { baseDir, isData } = {}) {
   const value = typeof input === 'string' ? input.trim() : ''
   if (value === '') throw new Error(`Give an image path or a data URL. ${HINT}`)
-  if (/^data:/i.test(value)) return readDataUrl(value)
+  if (/^data:/i.test(value)) return readDataUrl(value).url
   if (/^https?:\/\//i.test(value)) throw new Error('An http(s) link is not downloaded here. Save the image to a file and pass its path, or pass a data URL.')
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) throw new Error(`The avatar must be a local image path or a data URL. ${HINT}`)
   // A network path (\\host\share) would make Windows connect to that host and sign in.
