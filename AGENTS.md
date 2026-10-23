@@ -70,3 +70,13 @@ The full workflow is in [CONTRIBUTING.md](CONTRIBUTING.md#how-we-work). The part
 - Commit messages in English, imperative subject, the reason in the body. Keep commits small.
 - The person who asked for the change is the commit author. Do not set an AI agent or bot as author or committer, and do not add `Co-authored-by` lines for one.
 - User-facing text in the plugin is English. Keep the README and README.zh.md in step when you change one of them.
+
+## Cursor Cloud specific instructions
+
+The commands in [Commands](#commands) are the checks to run. The Cloud Agent image already installs them. These facts are not in that list:
+
+- Node is 22.23 (the `22.19+` floor). Corepack activates pnpm 11.7.0. The gitignored checkout `deepseek-harness/` (tag `dsh-v0.2.1-rc.2`) pins `pnpm@11.28.5`; Corepack uses that version inside the checkout.
+- `dev/bench.sh` runs `pnpm dsh` from that checkout. DeepSeek Harness serves built client artifacts, so the checkout needs `pnpm install` and `pnpm run build` (its README). `pnpm install` alone leaves `lib/client.js` missing and the bench exits. The Linux native addon in that build needs `musl-gcc` from `musl-tools`, and a Node install that has `node_api.h`. `/exec-daemon/node` has no headers; the nvm Node does.
+- Unit tests and the linter load `ds-bot/dev/harness/` (`npm run harness`), not the checkout, when that folder has `node_modules`.
+- In `app/`, `ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci` then `npm test`. Those tests start no window. The desktop app itself is Windows and macOS.
+- Benches use the mock model and write only under `.dsh-test-<name>/`. Stop one with `dev/bench.sh <name> <web-port> <mock-port> stop`.
