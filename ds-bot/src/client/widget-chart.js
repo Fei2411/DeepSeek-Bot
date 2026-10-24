@@ -1,5 +1,4 @@
 import { createElement as h, Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { CopyIcon, DotsIcon, DownloadIcon } from './icons.js'
 import { t } from './i18n.js'
 import { asText, resolve } from '../shared/views.js'
 
@@ -270,27 +269,7 @@ function saveImage(svg, name) {
   image.src = url
 }
 
-function ChartMenu({ asTable, onTable, onCopy, onSave }) {
-  const [open, setOpen] = useState(false)
-  const root = useRef(null)
-  useEffect(() => {
-    if (!open) return undefined
-    const away = (event) => { if (!root.current?.contains(event.target)) setOpen(false) }
-    const key = (event) => { if (event.key === 'Escape') setOpen(false) }
-    document.addEventListener('pointerdown', away, true)
-    document.addEventListener('keydown', key)
-    return () => { document.removeEventListener('pointerdown', away, true); document.removeEventListener('keydown', key) }
-  }, [open])
-  const pick = run => () => { setOpen(false); run() }
-  return h('div', { ref: root, className: 'bt-chart-tools', 'data-open': open ? '' : undefined },
-    h('button', { type: 'button', className: 'bt-chart-more', 'aria-label': t('Chart options'), 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => setOpen(value => !value) }, h(DotsIcon)),
-    open ? h('div', { className: 'bt-menu bt-chart-menu', role: 'menu' },
-      h('button', { type: 'button', role: 'menuitem', onClick: pick(onTable) }, h(TableIcon), asTable ? t('View as chart') : t('View as table')),
-      h('button', { type: 'button', role: 'menuitem', onClick: pick(onCopy) }, h(CopyIcon), t('Copy data')),
-      h('button', { type: 'button', role: 'menuitem', onClick: pick(onSave) }, h(DownloadIcon), t('Download image'))) : null)
-}
-
-const TableIcon = () => h('svg', { width: 16, height: 16, viewBox: '0 0 20 20', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+export const TableIcon = () => h('svg', { width: 16, height: 16, viewBox: '0 0 20 20', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
   h('path', { d: 'M4.5 4h11A1.5 1.5 0 0 1 17 5.5v9a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 14.5v-9A1.5 1.5 0 0 1 4.5 4z' }), h('path', { d: 'M3 8.5h14M8 8.5V16' }))
 
 function ChartTable({ data }) {
@@ -304,7 +283,7 @@ function ChartTable({ data }) {
         series.map((item, index) => h('td', { key: index, className: 'bt-num' }, withUnit(item.values[at], series.length === 1 && !item.name ? '' : unit))))))))
 }
 
-export function WidgetChart({ node, lookup }) {
+export function WidgetChart({ node, lookup, registerChart, refreshCharts }) {
   const data = chartData(node, lookup)
   const { kind, categories, series, unit } = data
   const box = useRef(null)
@@ -315,6 +294,9 @@ export function WidgetChart({ node, lookup }) {
   const [asTable, setAsTable] = useState(false)
   const [copied, setCopied] = useState(false)
   const labelId = useId()
+  const menuKey = useId()
+  const table = useRef(asTable)
+  table.current = asTable
   const shown = series.map((_, index) => !hidden.includes(index))
   const toggle = (index) => {
     if (hidden.includes(index)) setHidden(hidden.filter(item => item !== index))
@@ -340,6 +322,23 @@ export function WidgetChart({ node, lookup }) {
   const copy = () => {
     void navigator.clipboard?.writeText(chartCsv(data)).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })
   }
+  const toggleTable = () => { table.current = !table.current; setAsTable(table.current) }
+  const menuLabel = typeof node.caption === 'string' && node.caption !== '' ? node.caption : null
+  const action = useRef(null)
+  action.current = { label: menuLabel, copy, save: () => { if (svg.current) saveImage(svg.current, 'chart.png') }, toggleTable }
+  // The card's ⋯ menu shows the chart's actions. Register once on mount — a
+  // re-register would move the chart to the end of the card's group order —
+  // and let the getters hand the menu the current name and table state.
+  useEffect(() => registerChart?.(menuKey, {
+    get label() { return action.current.label },
+    get asTable() { return table.current },
+    toggleTable: () => action.current.toggleTable(),
+    copy: () => action.current.copy(),
+    save: () => action.current.save(),
+  }), [registerChart, menuKey])
+  // A table switch or a new caption asks the card for a fresh menu, without
+  // touching the registration order.
+  useEffect(() => refreshCharts?.(), [refreshCharts, asTable, menuLabel])
   const legend = isDonut
     ? h('div', { className: 'bt-chart-legend bt-chart-legend-list' }, categories.map((name, at) => h('div', {
       key: at, className: 'bt-chart-key', 'data-dim': active !== null && active !== at ? '' : undefined,
@@ -369,9 +368,8 @@ export function WidgetChart({ node, lookup }) {
   const body = asTable ? h(ChartTable, { data })
     : isDonut ? h('div', { className: legendBeside ? 'bt-chart-donut bt-chart-donut-beside' : 'bt-chart-donut', onPointerLeave: () => setActive(null) }, plot, legend)
       : h(Fragment, null, legend, plot)
-  return h('figure', { ref: box, className: 'bt-chart', 'data-kind': kind, 'data-table': asTable ? '' : undefined },
+  return h('figure', { ref: box, className: 'bt-chart', 'data-kind': kind },
     h('span', { id: labelId, hidden: true }, label),
-    h(ChartMenu, { asTable, onTable: () => setAsTable(value => !value), onCopy: copy, onSave: () => { if (svg.current) saveImage(svg.current, 'chart.png') } }),
     body,
     // The SVG stays mounted under the table, so the image can still be saved from it.
     asTable ? h('div', { hidden: true }, plot) : null,
@@ -414,18 +412,8 @@ export const CHART_CSS = `
 .bt-chart-donut{display:flex;flex-direction:column;align-items:center;gap:12px}
 .bt-chart-donut-beside{flex-direction:row;align-items:center;gap:24px}
 .bt-chart-donut-beside .bt-chart-legend-list{flex:1 1 auto;max-width:280px}
-.bt-chart-tools{position:absolute;top:-4px;right:0;z-index:5;opacity:0;transition:opacity .12s ease}
-.bt-chart:hover .bt-chart-tools,.bt-chart-tools:focus-within,.bt-chart-tools[data-open]{opacity:1}
-.bt-chart[data-table] .bt-chart-tools{position:relative;top:0;align-self:flex-end;order:-1;margin-bottom:-4px;opacity:1}
-@media (hover:none){.bt-chart-tools{opacity:1}}
-.bt-chart-more{width:28px;height:28px;padding:0;border:0;border-radius:50%;background:none;color:var(--bt-ink-2);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background-color .12s ease,color .12s ease}
-.bt-chart-more:hover,.bt-chart-tools[data-open] .bt-chart-more{background:var(--bt-hover);color:var(--bt-ink)}
-.bt-chart-more:focus-visible{outline:2px solid var(--bt-accent);outline-offset:1px}
-.bt-chart-more svg{width:16px;height:16px}
-.bt-menu.bt-chart-menu{position:absolute;top:32px;right:0;--bt-origin:top right;min-width:180px}
-.bt-menu.bt-chart-menu button{gap:8px}
 .bt-chart-copied{position:absolute;top:2px;right:36px;font-size:12px;line-height:16px;color:var(--bt-ink-2);animation:bt-veil-in .16s ease-out}
 .bt-widget-table .bt-num{text-align:end;font-variant-numeric:tabular-nums}
 .bt-widget-table tbody th{padding:6px 10px;font-weight:400;text-align:start;color:var(--bt-ink);border-bottom:0}
-@media (prefers-reduced-motion:reduce){.bt-chart-mark,.bt-chart-dot,.bt-chart-tools{transition:none}.bt-chart-tip{animation:none}}
+@media (prefers-reduced-motion:reduce){.bt-chart-mark,.bt-chart-dot{transition:none}.bt-chart-tip{animation:none}}
 `

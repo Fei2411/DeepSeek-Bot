@@ -205,7 +205,9 @@ test('in the Desktop profile read_browser is the last tool and reads through the
   const poll = call('browser-wait', { clientId: 'w1', open: { b2: { url: 'https://example.com/', title: 'Example' }, nope: { url: 'https://x/' } } })
   await new Promise(resolve => setTimeout(resolve, 10))
   const reading = read({})
-  const requests = (await poll).value
+  const response = (await poll).value
+  const requests = response.requests
+  assert.deepEqual(response.holds, {})
   assert.deepEqual(requests.map(request => request.botId), ['b2'])
   assert.deepEqual((await call('browser-result', { id: requests[0].id, ok: true, page: { url: 'https://example.com/', title: 'Example', text: 'Hello from the page', items: [{ role: 'link', name: 'More', href: 'https://example.com/more' }] } })).value, true)
   const text = await reading
@@ -213,6 +215,20 @@ test('in the Desktop profile read_browser is the last tool and reads through the
   assert.match(text, /Hello from the page/)
   assert.match(text, /\[1\] link "More" → https:\/\/example\.com\/more/)
   assert.equal((await call('state', {})).value.browser, true)
+})
+
+test('browser takeover and give-back are user-only and publish hold state', async t => {
+  const previous = process.env.DS_BOT_APP
+  process.env.DS_BOT_APP = '1'
+  t.after(() => { if (previous === undefined) delete process.env.DS_BOT_APP; else process.env.DS_BOT_APP = previous })
+  const { call, stop } = start(TEAM, { services: { profileContext: { name: 'ds-bot' } } })
+  t.after(stop)
+  await call('state')
+  assert.equal((await call('browser-takeover', { botId: 'b2' })).value, true)
+  const poll = (await call('browser-wait', { clientId: 'hold-window', open: {} })).value
+  assert.deepEqual(poll.holds.b2, { by: 'user', reason: 'takeover', note: 'The user is controlling this browser.' })
+  assert.equal((await call('browser-give-back', { botId: 'b2' })).value, true)
+  assert.deepEqual((await call('browser-wait', { clientId: 'hold-window', open: {} })).value.holds, {})
 })
 
 test('the desktop app has read_browser too; DSH Web does not', (t) => {

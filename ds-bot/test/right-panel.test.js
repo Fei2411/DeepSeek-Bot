@@ -101,8 +101,8 @@ const bot = { id: 'a', name: 'Chief', sessionId: 'a' }
 const room = { id: 'g', name: 'Writers', named: true, members: ['a'] }
 const roster = { byId: { a: bot }, roomsById: { g: room }, bots: [], exchangeTurns: {}, questions: {}, memory: false }
 const hook = value => select => select(value)
-const drawer = (sessionId, actions) => DetailsDrawer({
-  sessionId, roster, actions,
+const drawer = (sessionId, actions, liveRoster = roster) => DetailsDrawer({
+  sessionId, roster: liveRoster, actions,
   useSessions: hook({ byId: {} }),
   useSessionStatus: hook(new Map()),
   useActivity: hook({}),
@@ -110,30 +110,55 @@ const drawer = (sessionId, actions) => DetailsDrawer({
   useBrowserTabs: hook({}),
   useBrowserPages: hook({}),
 })
-const terminalButton = (node) => {
-  if (Array.isArray(node)) return node.map(terminalButton).find(found => found !== null) ?? null
+const moreButton = (node) => {
+  if (Array.isArray(node)) return node.map(moreButton).find(found => found !== null) ?? null
   if (node === null || typeof node !== 'object') return null
-  if (node.props?.['data-info-row'] === 'terminal') return node
+  if (node.props?.['data-info-row'] === 'more') return node
   for (const child of node.children ?? []) {
-    const found = terminalButton(child)
+    const found = moreButton(child)
     if (found) return found
   }
   return null
 }
+const menuKeys = (node) => {
+  const button = moreButton(node)
+  const items = button?.children.flat(Infinity).find(child => child?.props?.items)?.props?.items ?? []
+  // `items` was built inside the bundle's vm context; a test-context array compares deep-equal.
+  return [...items].map(item => (item.sep ? 'sep' : item.key))
+}
+const menuItem = (node, key) => {
+  const button = moreButton(node)
+  return [...(button?.children.flat(Infinity).find(child => child?.props?.items)?.props?.items ?? [])].find(item => item.key === key)
+}
 
-test('the drawer top row offers a new terminal where DSH has the tab type', () => {
-  for (const sessionId of ['a', 'g']) {
-    let opened = 0
-    const button = terminalButton(drawer(sessionId, { canOpenTerminal: () => true, newTerminal: () => { opened += 1 } }))
-    assert.ok(button, `${sessionId} shows the button`)
-    assert.equal(button.props['aria-label'], 'New terminal')
-    button.props.onClick()
-    assert.equal(opened, 1)
+test('the drawer `···` lists browser, a side chat, and the column tabs', () => {
+  const picks = { openBrowser: 0, newSideChat: 0, newTerminal: 0, openFiles: 0 }
+  const actions = {
+    ...Object.fromEntries(Object.keys(picks).map(name => [name, () => { picks[name] += 1 }])),
+    canOpenTerminal: () => true,
+    canOpenFiles: () => true,
+  }
+  const browseRoster = { ...roster, browser: true }
+  const withBrowser = drawer('a', actions, browseRoster)
+  assert.deepEqual(menuKeys(withBrowser), ['browser', 'side', 'sep', 'terminal', 'files'])
+  for (const key of ['browser', 'side', 'terminal', 'files']) {
+    const action = { browser: 'openBrowser', side: 'newSideChat', terminal: 'newTerminal', files: 'openFiles' }[key]
+    menuItem(withBrowser, key).onPick()
+    assert.equal(picks[action], 1, `${key} runs ${action}`)
   }
 })
 
-test('without the terminal tab type or the column face the row keeps no button', () => {
-  assert.equal(terminalButton(drawer('a', { canOpenTerminal: () => false })), null)
-  assert.equal(terminalButton(drawer('a', {})), null)
-  assert.equal(terminalButton(drawer('g', { canOpenTerminal: () => false })), null)
+test('a bot in a window without a browser still gets Side chat in the `···`', () => {
+  assert.deepEqual(menuKeys(drawer('a', {})), ['side'])
+})
+
+test('a group keeps only the column tabs, and nothing when they are absent', () => {
+  const actions = { canOpenTerminal: () => true, canOpenFiles: () => true, newTerminal: () => {}, openFiles: () => {} }
+  assert.deepEqual(menuKeys(drawer('g', actions)), ['terminal', 'files'])
+  assert.equal(moreButton(drawer('g', {})), null)
+  assert.equal(moreButton(drawer('g', { canOpenTerminal: () => false })), null)
+})
+
+test('a non-team surface shows no `···`', () => {
+  assert.equal(moreButton(drawer('plain', { canOpenTerminal: () => true })), null)
 })

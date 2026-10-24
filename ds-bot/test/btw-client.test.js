@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  dockCards, matchBtwEnter, tailCards, withBtwRows,
+  dockCards, tailCards, withBtwRows,
 } from '../src/client/btw-model.js'
+import { matchSideEnter } from '../src/client/side-model.js'
 import { createSource } from '../src/client/sources.js'
 
 // DSH sends the line on when matchEnter returns undefined. A claim or a throw
@@ -12,7 +13,7 @@ function sessionFor(id) {
 }
 
 async function enter(roster, session, line, envelope = { attachments: 0 }, signal) {
-  const outcome = await matchBtwEnter(roster, session.id, line, envelope, signal)
+  const outcome = await matchSideEnter(roster, session.id, line, envelope, signal)
   if (outcome === undefined) session.prompt(line)
   return outcome
 }
@@ -26,26 +27,26 @@ async function refused(roster, session, line, envelope) {
   assert.deepEqual(session.sent, [])
 }
 
-test('a group, an attachment, and an empty /btw claim-and-refuse', async () => {
+test('a group, an attachment, and an empty /side claim-and-refuse', async () => {
   const group = sessionFor('g')
-  await assert.rejects(enter(groupRoster, group, '/btw what happened'), /private chat/)
-  await assert.rejects(enter(groupRoster, group, '/btw', { attachments: 2 }), /private chat/)
+  await assert.rejects(enter(groupRoster, group, '/side what happened'), /private chat/)
+  await assert.rejects(enter(groupRoster, group, '/side', { attachments: 2 }), /private chat/)
   assert.deepEqual(group.sent, [])
 
   const bot = sessionFor('s')
-  await assert.rejects(enter(botRoster, bot, '/btw what happened', { attachments: 1 }), /attachments/)
-  await assert.rejects(enter(botRoster, bot, '/btw'), /Write a question/)
-  await assert.rejects(enter(botRoster, bot, '/btw   '), /Write a question/)
+  await assert.rejects(enter(botRoster, bot, '/side what happened', { attachments: 1 }), /attachments/)
+  await assert.rejects(enter(botRoster, bot, '/side'), /Write a question/)
+  await assert.rejects(enter(botRoster, bot, '/side   '), /Write a question/)
   assert.deepEqual(bot.sent, [])
-  assert.deepEqual(await enter(botRoster, bot, '/btw what happened'), { claim: true })
+  assert.deepEqual(await enter(botRoster, bot, '/side what happened'), { claim: true })
   assert.deepEqual(bot.sent, [])
 })
 
-test('a /btw typed before the roster is ready never reaches session.prompt', async () => {
+test('a /side typed before the roster is ready never reaches session.prompt', async () => {
   const roster = createSource({ ready: false, byId: {}, roomsById: {} })
   const session = sessionFor('s')
   let settled = false
-  const pending = enter(roster, session, '/btw what happened').then((value) => {
+  const pending = enter(roster, session, '/side what happened').then((value) => {
     settled = true
     return value
   })
@@ -60,7 +61,7 @@ test('a /btw typed before the roster is ready never reaches session.prompt', asy
 test('a delayed roster that is a group still refuses, and abort does not send', async () => {
   const roster = createSource({ ready: false, byId: {}, roomsById: {} })
   const session = sessionFor('g')
-  const pending = enter(roster, session, '/btw')
+  const pending = enter(roster, session, '/side')
   await Promise.resolve()
   assert.deepEqual(session.sent, [])
   roster.set(groupRoster)
@@ -70,24 +71,25 @@ test('a delayed roster that is a group still refuses, and abort does not send', 
   const waiting = createSource({ ready: false, byId: {}, roomsById: {} })
   const bot = sessionFor('s')
   const controller = new AbortController()
-  const aborted = enter(waiting, bot, '/btw what happened', { attachments: 0 }, controller.signal)
+  const aborted = enter(waiting, bot, '/side what happened', { attachments: 0 }, controller.signal)
   controller.abort(new Error('stopped'))
   await assert.rejects(aborted, /stopped/)
   assert.deepEqual(bot.sent, [])
 })
 
 test('a roster snapshot that is not ready refuses instead of sending', async () => {
-  await refused({ ready: false, byId: {}, roomsById: {} }, sessionFor('s'), '/btw what happened')
+  await refused({ ready: false, byId: {}, roomsById: {} }, sessionFor('s'), '/side what happened')
 })
 
-test('a positively identified non-Bot session lets /btw through, and a non-command does not wait', async () => {
+test('a positively identified non-Bot session lets /side through, and a non-command does not wait', async () => {
   const session = sessionFor('plain')
-  assert.equal(await enter(otherRoster, session, '/btw what happened'), undefined)
-  assert.deepEqual(session.sent, ['/btw what happened'])
+  assert.equal(await enter(otherRoster, session, '/side what happened'), undefined)
+  assert.deepEqual(session.sent, ['/side what happened'])
 
   const roster = createSource({ ready: false, byId: {}, roomsById: {} })
-  assert.equal(await matchBtwEnter(roster, 's', '/btwquestion', { attachments: 0 }), undefined)
-  assert.equal(await matchBtwEnter(roster, 's', 'hello', { attachments: 0 }), undefined)
+  assert.equal(await matchSideEnter(roster, 's', '/sidequestion', { attachments: 0 }), undefined)
+  assert.equal(await matchSideEnter(roster, 's', '/btw question', { attachments: 0 }), undefined)
+  assert.equal(await matchSideEnter(roster, 's', 'hello', { attachments: 0 }), undefined)
 })
 
 const closed = { turn: 1, start: { seq: 10 }, end: { seq: 20 }, status: 'closed' }
@@ -262,4 +264,60 @@ test('a card whose turn is not loaded stays in the trailing block', () => {
   assert.deepEqual(shape(withBtwRows([...older, ...loaded], [gone])), [
     'user:progress', 'bot:working', 'user:next', 'bot:ok', 'user:later', 'bot:more', 'btw:gone',
   ])
+})
+
+// BtwDock, bundled and rendered with a minimal React stand-in: the dock is the
+// composer slot for cards whose turn is still open or matches nothing closed.
+// Old cards are read-only, so the dock shows no Cancel.
+import { fileURLToPath } from 'node:url'
+import { runInNewContext } from 'node:vm'
+import { build } from 'esbuild'
+
+const btwBundle = await build({
+  entryPoints: [fileURLToPath(new URL('../src/client/btw.js', import.meta.url))],
+  bundle: true, format: 'cjs', platform: 'node', write: false,
+  external: ['react', 'react-dom', '@deepseek-ai/dsh-client-ui-primitives'],
+})
+const btwModule = { exports: {} }
+runInNewContext(btwBundle.outputFiles[0].text, {
+  module: btwModule, exports: btwModule.exports, URL, URLSearchParams, setTimeout, clearTimeout,
+  window: { addEventListener() {}, removeEventListener() {}, innerWidth: 1280 },
+  require: (name) => {
+    const platform = {
+      react: {
+        createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }),
+        useState: init => [typeof init === 'function' ? init() : init, () => {}],
+        useEffect: () => {}, useRef: () => ({ current: null }),
+        useLayoutEffect: () => {}, useMemo: make => make(), useCallback: fn => fn,
+        useSyncExternalStore: (_subscribe, get) => get(), Fragment: 'fragment',
+      },
+      'react-dom': { createPortal: node => node },
+      '@deepseek-ai/dsh-client-ui-primitives': { MarkdownText: () => null },
+    }
+    if (!(name in platform)) throw new Error(`no platform module ${name}`)
+    return platform[name]
+  },
+})
+const { BtwDock } = btwModule.exports
+
+const findIn = (node, match, out = []) => {
+  if (Array.isArray(node)) node.forEach(child => findIn(child, match, out))
+  else if (node !== null && typeof node === 'object') {
+    if (match(node)) out.push(node)
+    for (const child of node.children ?? []) findIn(child, match, out)
+  }
+  return out
+}
+
+test('an open-turn card renders in the dock without a Cancel button', () => {
+  const card = { id: 'c1', partId: 's', status: 'done', question: 'q?', answer: 'a.', atSeq: null, createdAt: 1, finishedAt: 2 }
+  const roster = { ready: true, btwCards: { bot: [card] }, byId: { s: { id: 'bot', sessionId: 's' } }, roomsById: {} }
+  const actions = { turnFacts: () => ({ turns: new Map(), openTurn: { seq: 1 } }), watchTurns: () => () => {} }
+  const tree = BtwDock({ sessionId: 's', useRoster: select => select(roster), actions })
+  assert.equal(findIn(tree, node => node.props?.className === 'bt-btw-dock').length, 1)
+  // The card component sits in the tree as a vnode; render it to see the card.
+  const [cardNode] = findIn(tree, node => typeof node.type === 'function' && node.props?.card?.id === 'c1')
+  const view = cardNode.type(cardNode.props)
+  assert.equal(view.props.className, 'bt-btw bt-btw-compact')
+  assert.equal(findIn(view, node => node.props?.className === 'bt-btw-cancel').length, 0)
 })

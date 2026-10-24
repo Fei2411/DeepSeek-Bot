@@ -2,7 +2,7 @@
 // installed from (the npm registry, or a GitHub tag for a versioned git install)
 // and, when the user asks, reinstall it through DSH's plugin manager. A new version
 // runs from the next DSH start. A linked or local checkout is never offered one.
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const PKG = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
@@ -123,11 +123,35 @@ export function install(rt) {
   let target = null
   let checking = null
 
+  // A remove-and-install update under hot reload drops this host with its bundle;
+  // a note in the data folder carries the result to the start that follows it.
+  const markerPath = typeof rt.home === 'string' ? join(rt.home, 'update.json') : null
+  if (markerPath !== null && existsSync(markerPath)) {
+    let marker = null
+    try {
+      marker = JSON.parse(readFileSync(markerPath, 'utf8'))
+    } catch (error) {
+      rt.warn('ds-bot: could not read the update note: %s', error?.message ?? error)
+    }
+    if (marker === null) {
+      try { unlinkSync(markerPath) } catch { /* gone is what we want */ }
+    } else if (marker.to === PKG.version) {
+      Object.assign(status, { phase: 'updated', installed: PKG.version })
+      try { unlinkSync(markerPath) } catch { /* gone is what we want */ }
+    } else if (typeof marker.error === 'string' || marker.from !== PKG.version) {
+      rt.warn('ds-bot: the update to %s did not finish: %s', marker.to ?? 'a newer version', typeof marker.error === 'string' ? marker.error.slice(0, 600) : 'the install did not complete')
+      try { unlinkSync(markerPath) } catch { /* gone is what we want */ }
+    }
+    // A clean note on the version that wrote it stays: a reload can still be
+    // running the old modules (the hoisted profile layout keeps one path), and
+    // the next start that runs the new code reports the update then.
+  }
+
   const view = () => ({
     name: status.name, current: status.current, latest: status.latest, source: status.source, notesUrl: status.notesUrl,
     repoUrl: repoUrl(), enabled,
     checkedAt: status.checkedAt, phase: status.phase, installed: status.installed, error: status.error,
-    available: status.phase !== 'installed' && target !== null && status.latest !== null && newer(status.latest, status.current),
+    available: status.phase !== 'installed' && status.phase !== 'updated' && target !== null && status.latest !== null && newer(status.latest, status.current),
   })
 
   // Asked only while the About page is open, so a closed page never calls GitHub.
@@ -211,7 +235,42 @@ export function install(rt) {
     if (typeof service?.installBundle !== 'function') throw new Error('The DSH plugin manager is not available in this profile')
     const chosen = target
     Object.assign(status, { phase: 'installing', error: null })
-    void Promise.resolve(service.installBundle(chosen.spec, chosen.registry ? { registry: chosen.registry } : {}))
+    const options = chosen.registry ? { registry: chosen.registry } : {}
+    // Removing this bundle disposes our context before the promise answers, so the
+    // continuation uses plain fs for the note and a guarded logger.
+    const note = (template, ...args) => { try { rt.warn(template, ...args) } catch { /* our context is disposed */ } }
+    const mark = (error) => {
+      if (markerPath === null) return
+      try {
+        writeFileSync(markerPath, JSON.stringify({
+          from: PKG.version, to: chosen.version, spec: chosen.spec, startedAt: new Date().toISOString(),
+          ...(error === undefined ? {} : { error: String(error).slice(0, 600) }),
+        }))
+      } catch { /* a note that cannot be written just is not there */ }
+    }
+    // A refused removal leaves this version running, with nothing for a later start to report.
+    const unmark = () => { if (markerPath !== null) try { unlinkSync(markerPath) } catch { /* already gone */ } }
+    void Promise.resolve(service.installBundle(chosen.spec, options))
+      .then(async (result) => {
+        if (result?.error?.code !== 'already-installed') return result
+        // With HMR the plugin manager refuses to install a package the profile already
+        // depends on: remove the bundle (which unloads this host) and install it again.
+        if (typeof service.removeBundle !== 'function') return { error: { code: 'not-removable' } }
+        mark()
+        const removed = await Promise.resolve(service.removeBundle(PKG.name)).catch((error) => { unmark(); throw error })
+        if (removed?.error) {
+          unmark()
+          return { error: removed.error }
+        }
+        try {
+          const again = await service.installBundle(chosen.spec, options)
+          if (again?.error) mark(again.error.diagnostic ?? again.error.code ?? 'install failed')
+          return again
+        } catch (error) {
+          mark(error?.message ?? error)
+          throw error
+        }
+      })
       .then((result) => {
         if (result?.error || !['applied', 'restart-required'].includes(result?.application)) {
           throw new Error(result?.error?.diagnostic ?? result?.error?.code ?? `install ${result?.application ?? 'failed'}`)
@@ -219,7 +278,7 @@ export function install(rt) {
         Object.assign(status, { phase: 'installed', installed: cleanVersion(result.version) ?? chosen.version })
       })
       .catch((error) => {
-        rt.warn('ds-bot: update to %s failed: %s', chosen.spec, error?.message ?? error)
+        note('ds-bot: update to %s failed: %s', chosen.spec, error?.message ?? error)
         Object.assign(status, { phase: 'failed', error: String(error?.message ?? error).slice(0, 600) })
       })
     return view()

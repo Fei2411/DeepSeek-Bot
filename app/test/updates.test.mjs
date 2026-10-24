@@ -12,14 +12,20 @@ class FakeUpdater extends EventEmitter {
   installs = []
   failCheck = false
   found = null
+  // `wait` leaves the check pending, the way a slow answer from the feed would.
+  wait = false
   checkForUpdates() {
     this.checks += 1
+    this.emit('checking-for-update')
     if (this.failCheck) {
       const error = new Error('offline')
       this.emit('error', error)
       return Promise.reject(error)
     }
-    return Promise.resolve(this.found?.() ?? { isUpdateAvailable: false, updateInfo: { version: '0.1.7' } })
+    if (this.wait) return new Promise(() => {})
+    const result = this.found?.() ?? { isUpdateAvailable: false, updateInfo: { version: '0.1.7' } }
+    this.emit(result.isUpdateAvailable ? 'update-available' : 'update-not-available', result.updateInfo)
+    return Promise.resolve(result)
   }
   setFeedURL(options) { this.feeds.push(options) }
   quitAndInstall(...args) { this.installs.push(args) }
@@ -306,6 +312,82 @@ describe('watchReleases', () => {
     t.mock.timers.tick(4 * 60 * 60_000)
     assert.equal(checks, 1)
   })
+
+  test('reports checking, then current when nothing is newer or available when one is', async (t) => {
+    const none = watchReleases({
+      current: '0.1.7', arch: 'arm64', fetch: async () => releaseResponse([release('0.1.7')]), log: quietLog(),
+    })
+    t.after(none.stop)
+    assert.deepEqual(none.state(), { phase: 'checking' })
+    assert.equal(await none.latest(), null)
+    assert.deepEqual(none.state(), { phase: 'current' })
+
+    const page = 'https://github.com/Fei2411/DeepSeek-Bot/releases/tag/v0.1.9'
+    const found = watchReleases({
+      current: '0.1.7', arch: 'arm64', fetch: async () => releaseResponse([release('0.1.9', { page })]), log: quietLog(),
+    })
+    t.after(found.stop)
+    assert.deepEqual(await found.latest(), { version: '0.1.9', page })
+    assert.deepEqual(found.state(), { phase: 'available', version: '0.1.9', page })
+  })
+
+  test('a failed check reports failed: HTTP error, bad JSON, non-array, thrown', async (t) => {
+    const cases = [
+      async () => releaseResponse({}, 503),
+      async () => ({ ok: true, status: 200, json: async () => { throw new Error('bad JSON') } }),
+      async () => releaseResponse({ releases: [] }),
+      async () => { throw new Error('offline') },
+    ]
+    for (const fetch of cases) {
+      const updates = watchReleases({ current: '0.1.7', arch: 'arm64', fetch, log: quietLog() })
+      t.after(updates.stop)
+      assert.equal(await updates.latest(), null)
+      assert.deepEqual(updates.state(), { phase: 'failed' })
+    }
+  })
+
+  test('check() runs the same check as the timer, but not while one is on', async (t) => {
+    let calls = 0
+    let gate
+    const updates = watchReleases({
+      current: '0.1.7', arch: 'arm64',
+      fetch: () => { calls += 1; return new Promise((resolve) => { gate = resolve }) },
+      log: quietLog(),
+    })
+    t.after(updates.stop)
+    assert.deepEqual(updates.state(), { phase: 'checking' })
+    updates.check()
+    assert.equal(calls, 1)
+    gate(releaseResponse([release('0.1.7')]))
+    await updates.latest()
+    assert.deepEqual(updates.state(), { phase: 'current' })
+    updates.check()
+    assert.equal(calls, 2)
+    assert.deepEqual(updates.state(), { phase: 'checking' })
+    gate(releaseResponse([release('0.1.7')]))
+    await updates.latest()
+    assert.deepEqual(updates.state(), { phase: 'current' })
+  })
+
+  test('listeners hear every state change until they unsubscribe', async (t) => {
+    const updates = watchReleases({
+      current: '0.1.7', arch: 'arm64', fetch: async () => releaseResponse([release('0.1.7')]), log: quietLog(),
+    })
+    t.after(updates.stop)
+    const seen = []
+    const off = updates.subscribe(state => seen.push(state.phase))
+    await updates.latest()
+    assert.deepEqual(seen, ['current'])
+    updates.check()
+    await updates.latest()
+    await sleep(0)
+    assert.deepEqual(seen, ['current', 'checking', 'current'])
+    off()
+    updates.check()
+    await updates.latest()
+    await sleep(0)
+    assert.deepEqual(seen, ['current', 'checking', 'current'])
+  })
 })
 
 describe('watchUpdates', () => {
@@ -416,5 +498,68 @@ describe('watchUpdates', () => {
     stop()
     t.mock.timers.tick(8 * 60 * 60_000)
     assert.equal(updater.checks, 2)
+  })
+
+  test('follows the updater events: checking, current, downloading, downloaded', (t) => {
+    const updater = new FakeUpdater()
+    const updates = watchUpdates({ updater, beforeInstall: async () => {}, log: quietLog() })
+    t.after(updates.stop)
+    // The first check already answered: nothing newer.
+    assert.deepEqual(updates.state(), { phase: 'current' })
+    updater.emit('checking-for-update')
+    assert.deepEqual(updates.state(), { phase: 'checking' })
+    updater.emit('update-available', { version: '0.1.9' })
+    assert.deepEqual(updates.state(), { phase: 'downloading', version: '0.1.9' })
+    updater.emit('update-downloaded', { version: '0.1.9' })
+    assert.deepEqual(updates.state(), { phase: 'downloaded', version: '0.1.9' })
+  })
+
+  test('a failed check or download reports failed, unless an update is already downloaded', (t) => {
+    const updater = new FakeUpdater()
+    const updates = watchUpdates({ updater, beforeInstall: async () => {}, log: quietLog() })
+    t.after(updates.stop)
+    updater.emit('error', new Error('offline'))
+    assert.deepEqual(updates.state(), { phase: 'failed' })
+    updater.emit('update-available', { version: '0.1.9' })
+    updater.emit('error', new Error('sha512 checksum mismatch'))
+    assert.deepEqual(updates.state(), { phase: 'failed' })
+    updater.emit('update-downloaded', { version: '0.1.9' })
+    updater.emit('error', new Error('offline'))
+    assert.deepEqual(updates.state(), { phase: 'downloaded', version: '0.1.9' })
+  })
+
+  test('check() runs the timer\'s check, but not while checking, downloading or downloaded', (t) => {
+    const updater = new FakeUpdater()
+    updater.wait = true
+    const updates = watchUpdates({ updater, beforeInstall: async () => {}, log: quietLog() })
+    t.after(updates.stop)
+    // The first check is still on: the updater has not answered it yet.
+    assert.deepEqual(updates.state(), { phase: 'checking' })
+    updates.check()
+    assert.equal(updater.checks, 1)
+    updater.wait = false
+    updater.emit('update-not-available')
+    updates.check()
+    assert.equal(updater.checks, 2)
+    updater.emit('update-available', { version: '0.1.9' })
+    updates.check()
+    assert.equal(updater.checks, 2)
+    updater.emit('update-downloaded', { version: '0.1.9' })
+    updates.check()
+    assert.equal(updater.checks, 2)
+  })
+
+  test('listeners hear every state change until they unsubscribe', (t) => {
+    const updater = new FakeUpdater()
+    const updates = watchUpdates({ updater, beforeInstall: async () => {}, log: quietLog() })
+    t.after(updates.stop)
+    const seen = []
+    const off = updates.subscribe(state => seen.push(state.phase))
+    updater.emit('checking-for-update')
+    updater.emit('update-available', { version: '0.1.9' })
+    assert.deepEqual(seen, ['checking', 'downloading'])
+    off()
+    updater.emit('update-downloaded', { version: '0.1.9' })
+    assert.deepEqual(seen, ['checking', 'downloading'])
   })
 })

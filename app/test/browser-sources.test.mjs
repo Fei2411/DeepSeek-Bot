@@ -5,8 +5,9 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
-import { chromiumProfiles, cloneCookieStore, cloneWorkDir, firefoxProfiles, locksProfile } from '../src/browser-sources.mjs'
+import { appBoundRows, chromiumProfiles, cloneCookieStore, cloneWorkDir, firefoxProfiles, harvestCookies, locksProfile } from '../src/browser-sources.mjs'
 
 async function tempRoot() {
   const dir = await mkdtemp(join(tmpdir(), 'dsb-sources-test-'))
@@ -92,6 +93,46 @@ test('cloneCookieStore for Firefox copies the sqlite family', async () => {
     const copied = await cloneCookieStore(source, work.dir)
     assert.deepEqual(copied, [join(profile, 'cookies.sqlite')])
     assert.ok(existsSync(join(work.dir, 'cookies.sqlite')))
+  } finally { await work.remove(); await root.remove() }
+})
+
+async function cookieDb(dir, rows) {
+  const db = new DatabaseSync(join(dir, 'Cookies'))
+  db.exec('CREATE TABLE cookies (name TEXT, host_key TEXT, path TEXT, encrypted_value BLOB)')
+  const insert = db.prepare('INSERT INTO cookies (name, host_key, path, encrypted_value) VALUES (?, ?, ?, ?)')
+  for (const [name, host, blob] of rows) insert.run(name, host, '/', blob)
+  db.close()
+}
+
+test('appBoundRows lists v20 rows by name and domain, and counts the rest readable', async () => {
+  const root = await tempRoot()
+  try {
+    const net = join(root.dir, 'Default', 'Network')
+    await mkdir(net, { recursive: true })
+    await cookieDb(net, [
+      ['sid', '.example.com', Buffer.concat([Buffer.from('v20'), Buffer.alloc(29)])],
+      ['old', '.example.org', Buffer.concat([Buffer.from('v10'), Buffer.alloc(20)])],
+    ])
+    const census = appBoundRows(join(net, 'Cookies'))
+    assert.equal(census.readable, 1)
+    assert.equal(census.locked.length, 1)
+    assert.equal(census.locked[0].name, 'sid')
+    assert.equal(census.locked[0].domain, '.example.com')
+    assert.equal(census.locked[0].code, 'app-bound')
+    assert.equal(appBoundRows(join(root.dir, 'nowhere')), null)
+  } finally { await root.remove() }
+})
+
+test('harvestCookies refuses an all-v20 clone: launching the browser would read nothing', async () => {
+  const root = await tempRoot()
+  const work = await cloneWorkDir()
+  try {
+    const net = join(root.dir, 'Default', 'Network')
+    await mkdir(net, { recursive: true })
+    await writeFile(join(root.dir, 'Local State'), '{}')
+    await cookieDb(net, [['sid', '.example.com', Buffer.concat([Buffer.from('v20'), Buffer.alloc(29)])]])
+    const source = { engine: 'chromium', profilePath: join(root.dir, 'Default'), cookieDb: join(net, 'Cookies') }
+    await assert.rejects(() => harvestCookies(source, work.dir), (error) => error.code === 'app-bound')
   } finally { await work.remove(); await root.remove() }
 })
 

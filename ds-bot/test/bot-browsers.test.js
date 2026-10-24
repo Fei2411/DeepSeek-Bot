@@ -209,6 +209,33 @@ test('a page that asks for a new window opens a new tab in the same Bot', async 
   assert.deepEqual(guest.loads, ['https://pop.example.com/'])
 })
 
+test('an app popup is adopted and activated before a Bot has attached', async () => {
+  const calls = []
+  let receive
+  const doc = { body: { append() {} }, createElement: () => ({ style: {}, isConnected: true, append() {}, remove() {} }) }
+  const bridge = {
+    views: {
+      subscribe(listener) { receive = listener; return () => {} },
+      async sync() { return [] },
+      async create(botId, tabId) { calls.push({ type: 'create', botId, tabId }); return tabId },
+      async place(tabId, rect, visible) { calls.push({ type: 'place', tabId, rect, visible }) },
+      async navigate() {},
+      async command() {},
+      async focus() {},
+      async read() {},
+      async close() {},
+    },
+  }
+  const browsers = createBotBrowsers({ bridge, createSource, storage: fakeDesktop().storage, document: doc })
+  browsers.ensureTabs('a')
+  receive({ type: 'created', botId: 'a', tabId: 'user-popup', url: 'http://127.0.0.1:43118/popup', createdByBot: false, loading: false })
+  await tick()
+  assert.deepEqual(browsers.tabs.getSnapshot().a, { ids: ['user-popup'], active: 'user-popup' })
+  assert.ok(calls.some(call => call.type === 'create' && call.tabId === 'user-popup'))
+  await browsers.show('user-popup', BOX)
+  assert.ok(calls.some(call => call.type === 'place' && call.tabId === 'user-popup' && call.visible))
+})
+
 test('past six live guests the least recently shown one is released; forget drops all of a Bot’s tabs', async () => {
   const desktop = fakeDesktop()
   const browsers = createBotBrowsers({ bridge: desktop.bridge, createSource, storage: desktop.storage, document: desktop.doc })

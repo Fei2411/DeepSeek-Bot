@@ -5,7 +5,19 @@ import { openBotBrowser } from './session.js'
 import { gateScope } from './gate.js'
 
 export const browserOutput = {
-  schema: { type: 'string' },
+  schema: {
+    oneOf: [
+      { type: 'string' },
+      {
+        type: 'object',
+        properties: {
+          text: { type: 'string', required: true },
+          image: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+    ],
+  },
   render(_args, value) {
     if (value && typeof value === 'object') {
       const blocks = [{ type: 'text', text: String(value.text ?? '') }]
@@ -18,11 +30,19 @@ export const browserOutput = {
 
 /**
  * @param {any} ctx
- * @param {{ toolDefs: any[], defineTool: Function, keyOf: (exec: any) => Promise<string|undefined>, profileRoot: string, downloadRoot?: string, uploadRoots?: (botId: string) => Promise<string[]>, headless: boolean, playwrightUrl?: string, executablePath?: string, actionTimeout?: number, authorize?: (exec: any, botId: string, action: any) => Promise<void>, complete?: Function }} options
+ * @param {{ toolDefs: any[], defineTool: Function, keyOf: (exec: any) => Promise<string|undefined>, profileRoot: string, downloadRoot?: string, downloadRoots?: (botId: string) => Promise<string[]>, uploadRoots?: (botId: string) => Promise<string[]>, headless: boolean, playwrightUrl?: string, executablePath?: string, actionTimeout?: number, authorize?: (exec: any, botId: string, action: any) => Promise<void>, complete?: Function, connect?: (botId: string, downloadRoots?: string[]) => Promise<string>, getHold?: (botId: string) => any, onHold?: (botId: string, hold: any) => void, subscribeHolds?: (listener: (botId: string, hold: any) => void) => (() => void) | undefined, openSession?: typeof openBotBrowser }} options
  */
-export function mountBrowserPlugin(ctx, { toolDefs, defineTool, keyOf, profileRoot, downloadRoot, uploadRoots, headless, playwrightUrl, executablePath, actionTimeout, authorize, complete }) {
+export function mountBrowserPlugin(ctx, { toolDefs, defineTool, keyOf, profileRoot, downloadRoot, downloadRoots, uploadRoots, headless, playwrightUrl, executablePath, actionTimeout, authorize, complete, connect, getHold, onHold, subscribeHolds, openSession = openBotBrowser }) {
   const sessions = new Map()
+  const unsubscribeHolds = subscribeHolds?.((botId, hold) => {
+    if (hold?.by !== 'user') return
+    const session = sessions.get(botId)
+    if (!session) return
+    sessions.delete(botId)
+    void session.close()
+  })
   ctx.effect(() => async () => {
+    unsubscribeHolds?.()
     const open = [...sessions.values()]
     sessions.clear()
     await Promise.all(open.map(session => session.close()))
@@ -37,16 +57,21 @@ export function mountBrowserPlugin(ctx, { toolDefs, defineTool, keyOf, profileRo
       async execute(args, exec) {
         const botId = await keyOf(exec)
         if (!botId) return 'Only Bots on the team have a browser.'
+        if (getHold?.(botId)?.by === 'user') throw new Error('The user has taken over this browser. Wait for them to give it back.')
         let session = sessions.get(botId)
         if (spec.needsBrowser && session === undefined) {
-          session = await openBotBrowser({
+          const roots = downloadRoots ? await downloadRoots(botId) : undefined
+          session = await openSession({
             botId,
             profileRoot,
-            downloadDir: join(downloadRoot ?? join(profileRoot, 'browser-downloads'), botId),
+            downloadDir: roots === undefined ? join(downloadRoot ?? join(profileRoot, 'browser-downloads'), botId) : roots[0],
             headless,
             playwrightUrl,
             executablePath,
             actionTimeout,
+            connect: connect ? id => connect(id, roots ?? []) : undefined,
+            getHold: () => getHold?.(botId),
+            onHold: hold => onHold?.(botId, hold),
             uploadRoots: uploadRoots ? () => uploadRoots(botId) : undefined,
           })
           sessions.set(botId, session)

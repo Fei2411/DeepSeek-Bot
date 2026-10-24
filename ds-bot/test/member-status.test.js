@@ -126,6 +126,7 @@ test('the capsule says what a member does in its call\'s own words, and that it 
   assert.equal(label({ tool: 'pwsh', note: 'Download Ghidra 12.1.4 and check its hash.' }), 'Anvil · Download Ghidra 12.1.4 and check its hash…')
   assert.equal(label({ tool: 'read', target: 'dump.py' }), 'Anvil · Opening a file · dump.py…')
   assert.equal(label({ switching: true }), 'Anvil · Moving to a fresh conversation…')
+  assert.equal(label({ switching: true, folder: true }), 'Anvil · Switching working folder…')
   assert.equal(label({ tool: 'pwsh', said: '解压 Ghidra，顺便写脚本。', note: 'Expand-Archive' }), 'Anvil · 解压 Ghidra，顺便写脚本…')
 })
 

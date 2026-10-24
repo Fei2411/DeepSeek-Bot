@@ -18,6 +18,7 @@ const starCount = count => new Intl.NumberFormat(dateLocale(), { notation: 'comp
 function botHint(update) {
   if (update.phase === 'installing') return t('Updating DS Bot…')
   if (update.phase === 'installed') return t('Restart DSH to start using DS Bot {version}.', { version: update.installed ?? update.latest })
+  if (update.phase === 'updated') return t('DS Bot {version} is installed.', { version: update.installed ?? update.latest })
   if (update.phase === 'failed') return t('The update did not finish: {reason}', { reason: hostText(update.error ?? '') })
   if (update.available) return t('DS Bot {version} is available', { version: update.latest })
   if (update.source === 'app') return t('Updates come with the DeepSeek Bot app.')
@@ -27,6 +28,23 @@ function botHint(update) {
   if (!update.latest && update.source !== 'registry') return t('Updates are not offered for this install.')
   const checked = t('Checked {time}', { time: whenText(update.checkedAt) })
   return `${update.latest ? t('Up to date') : t('Could not check for updates.')} · ${checked}`
+}
+
+// The DS Bot row in the desktop app shows the app's own update state, kept as ownApp on
+// the update value. Anything that is not a state object (DSH Desktop, DSH Web, an
+// unpackaged app) leaves the row with today's "comes with the app" text.
+export function ownAppRow(ownApp) {
+  if (ownApp === null || typeof ownApp !== 'object') return null
+  const version = typeof ownApp.version === 'string' ? ownApp.version : ''
+  switch (ownApp.phase) {
+    case 'checking': return { hint: t('Checking for updates…'), button: null }
+    case 'current': return { hint: t('Up to date'), button: 'check' }
+    case 'downloading': return { hint: t('Downloading {version}…', { version }), button: null }
+    case 'downloaded': return { hint: t('{version} is ready; it installs when you restart', { version }), button: 'restart' }
+    case 'available': return { hint: t('{version} is available', { version }), button: 'open' }
+    case 'failed': return { hint: t('Could not check for updates.'), button: 'check' }
+    default: return null
+  }
 }
 
 function dshHint(dsh, shown) {
@@ -63,12 +81,21 @@ export function AboutPage({ useUpdate, actions, run, Section, Row }) {
   const phase = update.phase ?? 'idle'
   const dsh = update.dsh
   const dshPhase = dsh?.phase ?? 'idle'
-  useEffect(() => { if (phase === 'installed' || dshPhase === 'installed') setCheer(true) }, [phase, dshPhase])
+  useEffect(() => { if (phase === 'installed' || phase === 'updated' || dshPhase === 'installed') setCheer(true) }, [phase, dshPhase])
   const markState = checking ? 'searching' : phase === 'installing' || dshPhase === 'installing' ? 'working' : cheer ? 'done' : 'idle'
   // Same rule as the sidebar card.
   const dshNew = showsDshRow(dsh, update.app)
   const dshShown = dshNew && dsh.available
-  const botControl = phase === 'installed' || update.source === 'app' ? null
+  const ownRow = update.source === 'app' ? ownAppRow(update.ownApp) : null
+  const ownControl = ownRow?.button === 'restart'
+    ? h('button', { type: 'button', className: 'bt-fb-primary', onClick: () => run(actions.installOwnApp()) }, t('Restart to update'))
+    : ownRow?.button === 'check'
+      ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => run(actions.checkOwnApp()) }, t('Check for updates'))
+      : ownRow?.button === 'open'
+        ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => run(actions.openOwnApp()) }, t('Download'))
+        : null
+  const botControl = ownRow !== null ? ownControl
+    : phase === 'installed' || phase === 'updated' || update.source === 'app' ? null
     : update.available || phase === 'installing'
       ? h('button', { type: 'button', className: 'bt-fb-primary', disabled: phase === 'installing', onClick: () => run(actions.installUpdate()) },
           phase === 'installing' ? t('Updating…') : phase === 'failed' ? t('Try again') : t('Update'))
@@ -95,7 +122,7 @@ export function AboutPage({ useUpdate, actions, run, Section, Row }) {
       stars === null ? null : h('span', { className: 'bt-star-count' }, starCount(stars))) : null),
     repo ? h('p', { key: 'ask', className: 'bt-about-ask' }, t('If DS Bot helps you, a star on GitHub helps more people find it.')) : null,
     h(Section, { key: 'updates', title: t('Updates') },
-      h(Row, { label: 'DS Bot', hint: botHint(update) }, botControl, update.available && update.notesUrl ? h('a', linkProps(update.notesUrl), t("What's new")) : null),
+      h(Row, { label: 'DS Bot', hint: ownRow?.hint ?? botHint(update) }, botControl, update.available && update.notesUrl ? h('a', linkProps(update.notesUrl), t("What's new")) : null),
       dsh?.current ? h(Row, { label: 'DeepSeek Harness', hint: dshHint(dsh, dshShown) }, dshControl) : null),
     h(Section, { key: 'links', title: t('Links') },
       repo ? h(Row, { label: t('Source code'), hint: repo.replace(/^https:\/\//, '') }, h('a', linkProps(repo), h(GitHubMark), t('Open'))) : null,

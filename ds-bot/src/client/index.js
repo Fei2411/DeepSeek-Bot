@@ -11,7 +11,8 @@ import { TeamSidebar, ConnectPlugins, YouAvatar, AccountLauncher, FooterAccount,
 import { HeaderPill } from './header.js'
 import { ComposerPlus, ComposerVoice, menuIcons } from './composer.js'
 import { CHATS_SOURCE, atSources } from './at-menu.js'
-import { BtwDock, BtwTurnTail, btwSource } from './btw.js'
+import { BtwDock, BtwTurnTail } from './btw.js'
+import { SIDE_CSS, sideSource } from './side-chat.js'
 import { VOICE_BUNDLE } from './speech.js'
 import { sameVersion } from './dsh-offer.js'
 import { QuestionCard, QuestionDock } from './questions.js'
@@ -54,7 +55,7 @@ export function apply(ctx) {
   let seenAt = seenStore.read()
   // `details` is the panel's subject (a Session id); `view` picks details or the
   // subject Bot's browser inside it.
-  const ui = createSource({ details: null, view: 'details', renaming: false, tab: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: unreadStore.read(), reactions: reactionStore.read(), visits: {} })
+  const ui = createSource({ details: null, view: 'details', renaming: false, tab: null, side: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: unreadStore.read(), reactions: reactionStore.read(), visits: {} })
   // Bot mode paints the whole team surface; Agent mode withdraws every slot and
   // style so the shell's own interface returns. `plain` stays false until a Bot-mode
   // view hosts a plain session, which drops only the conversation replacements.
@@ -157,6 +158,7 @@ export function apply(ctx) {
     if (value.connectors !== undefined && JSON.stringify(value.connectors) !== JSON.stringify(current.connectors ?? [])) live.connectors = value.connectors
     if (value.capabilityStatuses !== undefined && JSON.stringify(value.capabilityStatuses) !== JSON.stringify(current.capabilityStatuses ?? {})) live.capabilityStatuses = value.capabilityStatuses
     if (value.btwCards !== undefined && JSON.stringify(value.btwCards) !== JSON.stringify(current.btwCards ?? {})) live.btwCards = value.btwCards
+    if (value.sideChats !== undefined && JSON.stringify(value.sideChats) !== JSON.stringify(current.sideChats ?? {})) live.sideChats = value.sideChats
     if (Object.keys(live).length > 0 && current.ready) roster.set({ ...current, ...live })
     if (value.unchanged || (value.revision === current.revision && value.modelsKey === current.modelsKey)) return
     // On a browser with no visit record yet, everything already there counts as seen.
@@ -208,7 +210,7 @@ export function apply(ctx) {
       if (stopped) return
       const value = await call('update-check', { fresh: false }).catch(() => null)
       if (stopped) return
-      if (value) update.set(previous => ({ ...value, app: previous.app }))
+      if (value) update.set(previous => ({ ...value, app: previous.app, ownApp: previous.ownApp }))
       timer = setTimeout(loop, value?.phase === 'installing' || value?.dsh?.phase === 'installing' ? 2000 : 60 * 60_000)
     }
     wakeUpdate = loop
@@ -227,6 +229,19 @@ export function apply(ctx) {
       const unsubscribe = appUpdates.subscribe(take)
       return () => { stopped = true; unsubscribe?.() }
     }, 'ds-bot: app update status')
+  }
+
+  // The DeepSeek Bot app's own updater; its state goes beside the host's answer as ownApp,
+  // which the About row turns into the app's update state and buttons.
+  const ownAppUpdates = globalThis.dsBotApp?.updates ?? null
+  if (ownAppUpdates?.state && ownAppUpdates.subscribe) {
+    ctx.effect(() => {
+      let stopped = false
+      const take = (ownApp) => { if (!stopped && ownApp) update.set(previous => ({ ...previous, ownApp })) }
+      void ownAppUpdates.state().then(take, () => {})
+      const unsubscribe = ownAppUpdates.subscribe(take)
+      return () => { stopped = true; unsubscribe?.() }
+    }, 'ds-bot: own app update state')
   }
 
   // Bot browsers need a webview bridge: DSH Desktop's, or the desktop app's of the
@@ -527,6 +542,21 @@ export function apply(ctx) {
       browserNavigate: (tabId, input) => browsers.navigate(tabId, input),
       browserCommand: (tabId, name) => browsers.command(tabId, name),
       browserFocus: (tabId) => browsers.focus(tabId),
+      browserTakeover: bridge.views ? async botId => {
+        const result = await call('browser-takeover', { botId })
+        await bridge.views.hold(botId, true)
+        return result
+      } : undefined,
+      browserStop: bridge.views ? async botId => {
+        const result = await call('browser-stop', { botId })
+        await bridge.views.hold(botId, true)
+        return result
+      } : undefined,
+      browserGiveBack: bridge.views ? async botId => {
+        const result = await call('browser-give-back', { botId })
+        await bridge.views.hold(botId, false)
+        return result
+      } : undefined,
       // Cookie imports, only where the bridge offers them (the desktop app): a file or an
       // installed browser's profile is previewed, then applied into the Bot's storage key.
       browserImport: typeof bridge.importSources === 'function' ? {
@@ -575,12 +605,18 @@ export function apply(ctx) {
   }
   actions.checkUpdate = async () => {
     const value = await call('update-check', { fresh: true })
-    update.set(previous => ({ ...value, app: previous.app }))
+    update.set(previous => ({ ...value, app: previous.app, ownApp: previous.ownApp }))
     wakeUpdate()
   }
+  // The app's own updater answers through its bridge; the state it pushes back re-renders
+  // the About row.
+  actions.checkOwnApp = async () => { await ownAppUpdates?.check?.() }
+  actions.installOwnApp = async () => { await ownAppUpdates?.install?.() }
+  actions.openOwnApp = async () => { await ownAppUpdates?.open?.() }
   const browserPages = browsers?.pages ?? createSource({})
   const browserTabs = browsers?.tabs ?? createSource({})
-  const face = () => ({ actions, hooks: { roster, ui, activity, work, memoryNews, registry, turnClock, live, cards, heldCards, browserPages, browserTabs, surface, update } })
+  const browserHolds = browsers?.holds ?? createSource({})
+  const face = () => ({ actions, hooks: { roster, ui, activity, work, memoryNews, registry, turnClock, live, cards, heldCards, browserPages, browserTabs, browserHolds, surface, update } })
   ctx.effect(() => noticeApprovals({
     work,
     roster,
@@ -605,7 +641,6 @@ export function apply(ctx) {
     } }
   }
 
-  actions.cancelBtw = card => call('btw-cancel', { sessionId: card.partId, id: card.id })
   // The dock lives outside the chat snapshot, so it subscribes for the turn that
   // owns a card. Until that turn closes, the card stays by the composer.
   actions.turnFacts = (sessionId) => {
@@ -639,6 +674,16 @@ export function apply(ctx) {
     actions.closePanel()
     try {
       ctx.get('sidebarRight')?.openTab('terminal')
+    } catch (error) {
+      actions.reportError(error, 'right-sidebar')
+    }
+  }
+  // The same hand-off for DSH's files tab, where that plugin registered it.
+  actions.canOpenFiles = () => ctx.get('sidebarRight') !== undefined && ctx.get('sidebarRightTabs')?.get('files') !== undefined
+  actions.openFiles = () => {
+    actions.closePanel()
+    try {
+      ctx.get('sidebarRight')?.openTab('files')
     } catch (error) {
       actions.reportError(error, 'right-sidebar')
     }
@@ -708,7 +753,7 @@ export function apply(ctx) {
         const launched = sessionId => controllerOf(sessionId)?.launcher.getSnapshot() === CHATS_SOURCE
         const offs = [
           ...atSources({ roster, sessions: ctx.sessions, launched, iconFor: menuIcons(roster) }).map(source => triggers.registerSource(source)),
-          triggers.registerSource(btwSource({ roster })),
+          triggers.registerSource(sideSource({ roster, actions })),
         ]
         atMenu = { controllerOf }
         return () => {
@@ -741,7 +786,9 @@ export function apply(ctx) {
     () => installCompiledStyles(MEMBER_CSS, 'members'),
     () => installCompiledStyles(USER_MESSAGE_CSS, 'user-messages'),
     () => installCompiledStyles(WIDGET_CSS, 'widgets'),
-    browsers ? () => installCompiledStyles(BROWSER_CSS, 'browser') : null,
+    () => installCompiledStyles(SIDE_CSS, 'side'),
+    // Strip and panel styles also serve the side-chat tabs, which need no bridge.
+    () => installCompiledStyles(BROWSER_CSS, 'browser'),
     () => installTheme(),
     () => shadow('sidebar.workspaces', { priority: BOT_PRIORITY, inject: face }, TeamSidebar),
     () => shadow('sidebar.brand.mark', { priority: BOT_PRIORITY }, BrandMark),

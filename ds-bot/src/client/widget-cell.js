@@ -1,12 +1,12 @@
-import { createElement as h, Fragment, useId, useRef, useState } from 'react'
+import { createElement as h, Fragment, useEffect, useId, useRef, useState } from 'react'
 import { MarkdownText } from './dsh-primitives.js'
-import { CheckIcon, CloseIcon, InfoIcon } from './icons.js'
+import { CheckIcon, CloseIcon, CopyIcon, DotsIcon, DownloadIcon, InfoIcon } from './icons.js'
 import { t } from './i18n.js'
 import { AnsweredCell, keyLetter, useOptionKeys } from './questions.js'
 import { useDockHold } from './card-hold.js'
 import { heldCardKey } from './sources.js'
 import { Segmented } from './motion.js'
-import { CHART_CSS, WidgetChart } from './widget-chart.js'
+import { CHART_CSS, TableIcon, WidgetChart } from './widget-chart.js'
 import { HTML_CSS, HtmlFrame } from './widget-html.js'
 import { asText, checkShownView, choiceValue, inputDefault, resolve, viewInputs, viewScope } from '../shared/views.js'
 
@@ -299,7 +299,7 @@ function WidgetNode({ node, ctx }) {
     }
     case 'metric': return h(WidgetMetric, { node, lookup })
     case 'table': return h(WidgetTable, { node, lookup })
-    case 'chart': return h(WidgetChart, { node, lookup })
+    case 'chart': return h(WidgetChart, { node, lookup, registerChart: ctx.registerChart, refreshCharts: ctx.refreshCharts })
     case 'progress': return h(WidgetProgress, { node, lookup })
     case 'callout': return h(WidgetCallout, { node, lookup })
     case 'sources': return h(WidgetSources, { node })
@@ -320,7 +320,7 @@ function WidgetNode({ node, ctx }) {
 // them as they were sent. Every answer carries the inputs' values. Letter keys
 // answer a lone options block from the keyboard; with more than one in a card the
 // same letter would hit both.
-export function WidgetView({ view, onSubmit, settled = false, answer = null, busy = false }) {
+export function WidgetView({ view, onSubmit, settled = false, answer = null, busy = false, registerChart, refreshCharts }) {
   const inputs = viewInputs(view)
   const [values, setValues] = useState(() => Object.fromEntries(inputs.map(node => [node.id, inputDefault(node)])))
   const sent = answer?.values?.inputs
@@ -329,9 +329,60 @@ export function WidgetView({ view, onSubmit, settled = false, answer = null, bus
   const ctx = {
     onSubmit: submit, settled, answer, busy, keys: !settled && countType(view, 'options') === 1,
     lookup: viewScope(view, current), values: current, locked: settled || busy,
-    setInput: (id, value) => setValues(before => ({ ...before, [id]: value })),
+    setInput: (id, value) => setValues(before => ({ ...before, [id]: value })), registerChart, refreshCharts,
   }
   return h(WidgetNode, { node: view, ctx })
+}
+
+// A chart keeps its actions (table view, copy, save) in the card's ⋯ menu: each
+// chart registers a handle in mount order and bumps the card so a table switch
+// shows in the open menu's wording.
+function useChartHandles() {
+  const [, bump] = useState(0)
+  const charts = useRef(new Map())
+  const fns = useRef(null)
+  if (fns.current === null) {
+    const refresh = () => bump(value => value + 1)
+    fns.current = {
+      registerChart: (key, handle) => {
+        charts.current.set(key, handle)
+        refresh()
+        return () => { charts.current.delete(key); refresh() }
+      },
+      refreshCharts: refresh,
+    }
+  }
+  return { charts: [...charts.current.values()], ...fns.current }
+}
+
+// The dropdown's items: one flat list for a lone chart, one labelled group per
+// chart otherwise.
+export function ViewMenuList({ charts, pick }) {
+  return h('div', { className: 'bt-menu bt-view-menu', role: 'menu' },
+    charts.map((chart, index) => h(Fragment, { key: index },
+      charts.length > 1 ? h(Fragment, null,
+        index > 0 ? h('div', { className: 'bt-menu-sep', role: 'separator' }) : null,
+        h('div', { className: 'bt-view-menu-label' }, chart.label ?? t('Chart {n}', { n: index + 1 }))) : null,
+      h('button', { type: 'button', role: 'menuitem', onClick: pick(chart.toggleTable) }, h(TableIcon), chart.asTable ? t('View as chart') : t('View as table')),
+      h('button', { type: 'button', role: 'menuitem', onClick: pick(chart.copy) }, h(CopyIcon), t('Copy data')),
+      h('button', { type: 'button', role: 'menuitem', onClick: pick(chart.save) }, h(DownloadIcon), t('Download image')))))
+}
+
+function ViewMenu({ charts }) {
+  const [open, setOpen] = useState(false)
+  const root = useRef(null)
+  useEffect(() => {
+    if (!open) return undefined
+    const away = (event) => { if (!root.current?.contains(event.target)) setOpen(false) }
+    const key = (event) => { if (event.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', away, true)
+    document.addEventListener('keydown', key)
+    return () => { document.removeEventListener('pointerdown', away, true); document.removeEventListener('keydown', key) }
+  }, [open])
+  const pick = run => () => { setOpen(false); run() }
+  return h('div', { ref: root, className: 'bt-view-tools', 'data-open': open ? '' : undefined },
+    h('button', { type: 'button', className: 'bt-view-more', 'aria-label': t('Chart options'), 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => setOpen(value => !value) }, h(DotsIcon)),
+    open ? h(ViewMenuList, { charts, pick }) : null)
 }
 
 // What every view wears. A view with controls is a light card; one that only shows
@@ -339,18 +390,20 @@ export function WidgetView({ view, onSubmit, settled = false, answer = null, bus
 // view that still waits for its answer has a dismiss button.
 function WidgetCard({ title, view, onSubmit, onDismiss, busy = false, raised = false, settled = false, answer = null }) {
   const titleId = useId()
+  const { charts, registerChart, refreshCharts } = useChartHandles()
   const framed = raised || hasControls(view)
   const className = ['bt-view', framed ? 'bt-q' : 'bt-view-bare', settled ? 'bt-q-settled' : '', raised ? 'bt-q-raised' : ''].filter(Boolean).join(' ')
-  const head = title || onDismiss
+  const head = title || onDismiss || countType(view, 'chart') > 0
     ? h('div', { className: 'bt-view-head' },
       title ? h('p', { className: 'bt-view-title', id: titleId }, title) : h('span', { className: 'bt-view-title' }),
+      countType(view, 'chart') > 0 ? h(ViewMenu, { charts }) : null,
       onDismiss ? h('button', { type: 'button', className: 'bt-q-x', 'aria-label': t('Dismiss view'), title: t('Dismiss'), onClick: onDismiss, disabled: busy }, h(CloseIcon)) : null)
     : null
   return h('div', {
     className, role: 'group', 'aria-labelledby': title ? titleId : undefined, 'aria-label': title ? undefined : t('View'), 'aria-busy': busy || undefined,
   },
   head,
-  h('div', { className: 'bt-view-body' }, h(WidgetView, { view, onSubmit, settled, answer, busy })))
+  h('div', { className: 'bt-view-body' }, h(WidgetView, { view, onSubmit, settled, answer, busy, registerChart, refreshCharts })))
 }
 
 // A view waiting for its answer, inline at its call or raised in the dock. Like a
@@ -445,6 +498,16 @@ export const WIDGET_CSS = `
 .bt-view-head{display:flex;align-items:flex-start;gap:8px;min-width:0}
 .bt-view-title{flex:1 1 0;min-width:0;margin:0;font-size:13px;line-height:18px;font-weight:500;color:var(--bt-ink);overflow-wrap:anywhere}
 .bt-q-settled .bt-view-title{color:var(--bt-ink-2)}
+.bt-view-tools{position:relative;flex:none;align-self:flex-start;opacity:0;transition:opacity .12s ease}
+.bt-view:hover .bt-view-tools,.bt-view-tools:focus-within,.bt-view-tools[data-open]{opacity:1}
+@media (hover:none){.bt-view-tools{opacity:1}}
+.bt-view-more{width:28px;height:28px;padding:0;border:0;border-radius:50%;background:none;color:var(--bt-ink-2);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background-color .12s ease,color .12s ease}
+.bt-view-more:hover,.bt-view-tools[data-open] .bt-view-more{background:var(--bt-hover);color:var(--bt-ink)}
+.bt-view-more:focus-visible{outline:2px solid var(--bt-accent);outline-offset:1px}
+.bt-view-more svg{width:16px;height:16px}
+.bt-menu.bt-view-menu{position:absolute;top:32px;right:0;--bt-origin:top right;min-width:180px}
+.bt-menu.bt-view-menu button{gap:8px}
+.bt-view-menu-label{padding:2px 8px;font-size:11px;line-height:14px;color:var(--bt-ink-3);white-space:nowrap}
 .bt-view-body{min-width:0}
 .bt-widget-stack{display:flex;flex-direction:column;gap:12px;min-width:0}
 .bt-view-row{display:flex;flex-wrap:wrap;gap:12px 24px;min-width:0}
@@ -522,7 +585,7 @@ export const WIDGET_CSS = `
 .bt-q-inline .bt-view{margin:0;width:100%;max-width:min(100%,max(calc(var(--bt-msg-w,.8) * 100%),560px));order:0}
 body[data-bt-layout=flat] .bt-q-inline .bt-view{max-width:calc(var(--bt-flat-w,1) * 100%)}
 .bt-q-inline:has(>.bt-view-bare){margin:8px 0 12px}
-@media (prefers-reduced-motion:reduce){.bt-widget-progress-fill,.bt-view-radio-dot{transition:none}.bt-view-bare{animation:none}}
+@media (prefers-reduced-motion:reduce){.bt-widget-progress-fill,.bt-view-radio-dot,.bt-view-tools,.bt-view-more{transition:none}.bt-view-bare{animation:none}}
 ${CHART_CSS}
 ${HTML_CSS}
 `

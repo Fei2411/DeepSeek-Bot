@@ -15,6 +15,8 @@ if (host !== undefined && location.origin === host) {
     // The Bot browsers, in the shape of DSH Desktop's browser bridge so that ds-bot drives both
     // alike; `forget` clears a key's storage, which here outlives the app.
     browser: browserBridge(),
+    // The app's own updater, for the About row's state and buttons.
+    updates: updatesBridge(),
   })
   const caption = process.argv.find(value => value.startsWith('--ds-bot-caption='))
   if (caption !== undefined) {
@@ -33,6 +35,12 @@ if (host !== undefined && location.origin === host) {
 
 function browserBridge() {
   const listeners = new Map()
+  const viewListeners = new Set()
+  ipcRenderer.on('ds-bot:browser-view-changed', (_event, change) => {
+    for (const listener of [...viewListeners]) {
+      try { listener(change) } catch (error) { console.error('DeepSeek Bot: a browser view listener failed', error) }
+    }
+  })
   ipcRenderer.on('ds-bot:browser-open-requested', (_event, request) => {
     if (typeof request?.lease !== 'string' || typeof request.url !== 'string') return
     for (const listener of [...(listeners.get(request.lease) ?? [])]) {
@@ -43,6 +51,18 @@ function browserBridge() {
     acquire: key => ipcRenderer.invoke('ds-bot:browser-acquire', String(key)),
     release: lease => ipcRenderer.invoke('ds-bot:browser-release', String(lease)),
     forget: key => ipcRenderer.invoke('ds-bot:browser-forget', String(key)),
+    views: {
+      create: (botId, tabId, url) => ipcRenderer.invoke('ds-bot:browser-view-create', String(botId), String(tabId), typeof url === 'string' ? url : undefined),
+      sync: botId => ipcRenderer.invoke('ds-bot:browser-view-sync', String(botId)),
+      place: (tabId, rect, visible) => ipcRenderer.invoke('ds-bot:browser-view-place', String(tabId), rect, visible === true),
+      navigate: (botId, tabId, url) => ipcRenderer.invoke('ds-bot:browser-view-navigate', String(botId), String(tabId), String(url)),
+      command: (botId, tabId, command) => ipcRenderer.invoke('ds-bot:browser-view-command', String(botId), String(tabId), String(command)),
+      focus: (botId, tabId) => ipcRenderer.invoke('ds-bot:browser-view-focus', String(botId), String(tabId)),
+      read: (botId, tabId, script) => ipcRenderer.invoke('ds-bot:browser-view-read', String(botId), String(tabId), String(script)),
+      close: (botId, tabId) => ipcRenderer.invoke('ds-bot:browser-view-close', String(botId), String(tabId)),
+      hold: (botId, held) => ipcRenderer.invoke('ds-bot:browser-view-hold', String(botId), held === true),
+      subscribe(listener) { viewListeners.add(listener); return () => viewListeners.delete(listener) },
+    },
     // Cookie imports, only in the app: sources and a two-step pick/harvest → preview → apply.
     importSources: () => ipcRenderer.invoke('ds-bot:browser-import-sources'),
     importPick: () => ipcRenderer.invoke('ds-bot:browser-import-pick'),
@@ -58,6 +78,25 @@ function browserBridge() {
         set.delete(listener)
         if (set.size === 0 && listeners.get(id) === set) listeners.delete(id)
       }
+    },
+  }
+}
+
+function updatesBridge() {
+  const listeners = new Set()
+  ipcRenderer.on('ds-bot:app-update-changed', (_event, state) => {
+    for (const listener of [...listeners]) {
+      try { listener(state) } catch (error) { console.error('DeepSeek Bot: an update state handler failed', error) }
+    }
+  })
+  return {
+    state: () => ipcRenderer.invoke('ds-bot:app-update-state'),
+    check: () => ipcRenderer.invoke('ds-bot:app-update-check'),
+    install: () => ipcRenderer.invoke('ds-bot:app-update-install'),
+    open: () => ipcRenderer.invoke('ds-bot:app-update-open'),
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
     },
   }
 }

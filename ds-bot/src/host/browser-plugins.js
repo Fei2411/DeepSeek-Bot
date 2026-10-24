@@ -1,6 +1,7 @@
 // The whole team uses one browser plugin. Each Bot still gets its own profile
 // directory, including the group Sessions where that Bot speaks.
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { completeDeepseek } from './browser/deepseek.js'
 import { mountBrowserPlugin } from './browser/mount.js'
@@ -9,6 +10,27 @@ import * as script from './browser/script.js'
 import * as task from './browser/task.js'
 
 export const browserPlugins = { refs, script, task }
+export function appBrowserEndpoint(botId, downloadRoots) {
+  if (typeof process.send !== 'function') throw new Error('The app browser relay is unavailable.')
+  const id = randomUUID()
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      process.off('message', receive)
+      reject(new Error('The app browser relay did not respond.'))
+    }, 10_000)
+    const receive = message => {
+      if (message?.type !== 'ds-bot:browser-endpoint-response' || message.id !== id) return
+      clearTimeout(timeout)
+      process.off('message', receive)
+      if (typeof message.url === 'string') resolve(message.url)
+      else reject(new Error(message.error || 'The app browser relay is unavailable.'))
+    }
+    process.on('message', receive)
+    process.send({ type: 'ds-bot:browser-endpoint', id, botId, downloadRoots }, error => {
+      if (error) receive({ type: 'ds-bot:browser-endpoint-response', id, error: error.message })
+    })
+  })
+}
 
 const NAMES = Object.keys(browserPlugins)
 const GRANT_KINDS = new Set(['post', 'upload', 'download', 'delete'])
@@ -90,20 +112,30 @@ export function install(rt) {
     ? rt.config.browserHeadless
     : !process.env.DISPLAY
   const downloadRoot = join(rt.home, 'browser-downloads')
+  async function downloadRoots(botId) {
+    await rt.load()
+    const team = rt.teamFolder()
+    const requested = rt.workDirOf({ botId })
+    const working = requested !== undefined && await rt.isFolder(requested) ? requested : team
+    return [...new Set([working, team].filter(root => typeof root === 'string' && isAbsolute(root)))]
+  }
   mountBrowserPlugin(rt.ctx, {
     toolDefs: plugin.tools ?? plugin.toolDefs,
     defineTool,
     profileRoot: join(rt.home, 'browser-profiles'),
     downloadRoot,
+    downloadRoots,
     async uploadRoots(botId) {
-      await rt.load()
-      const requested = rt.workDirOf({ botId })
-      const working = requested !== undefined && await rt.isFolder(requested) ? requested : rt.teamFolder()
-      return [working, join(downloadRoot, botId)].filter(Boolean)
+      const roots = await downloadRoots(botId)
+      return [...new Set([...roots, join(downloadRoot, botId)])]
     },
     headless,
     playwrightUrl,
     executablePath,
+    connect: process.env.DS_BOT_APP === '1' && typeof process.send === 'function' ? appBrowserEndpoint : undefined,
+    getHold: botId => rt.browserChannel?.holdOf(botId) ?? null,
+    onHold: (botId, hold) => rt.browserChannel?.setHold(botId, hold),
+    subscribeHolds: listener => rt.browserChannel?.subscribeHolds?.(listener),
     authorize: (exec, botId, action) => authorizeBrowserAction(rt, exec, botId, action),
     complete: rt.config.browserComplete ?? completeDeepseek,
     async keyOf(exec) {

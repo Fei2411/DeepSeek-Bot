@@ -13,6 +13,7 @@ const { outputFiles } = await build({
       "export { QuestionDock } from './src/client/questions.js'",
       "export { SecretDock } from './src/client/secret-card.js'",
       "export { countCards } from './src/client/sources.js'",
+      "export { ViewMenuList, WidgetView } from './src/client/widget-cell.js'",
     ].join('\n'),
     resolveDir: fileURLToPath(new URL('..', import.meta.url)),
   },
@@ -45,7 +46,7 @@ runInNewContext(outputFiles[0].text, {
     throw new Error(`Unexpected platform module ${name}`)
   },
 })
-const { ToolCell, TriggerCell, callTree, stackReplies, QuestionDock, SecretDock, countCards } = module.exports
+const { ToolCell, TriggerCell, callTree, stackReplies, QuestionDock, SecretDock, countCards, ViewMenuList, WidgetView } = module.exports
 
 // Runs the effects collected since the last render; returns the cleanups.
 const mount = () => {
@@ -661,11 +662,54 @@ test('a view works its formulas out, draws a chart, and keeps html in a sandboxe
   const chart = cell({ type: 'chart', kind: 'bar', categories: ['A', 'B'], series: [{ values: [3, 5] }], unit: 'ms' })
   assert.ok(classed(chart, 'bt-view-bare') !== undefined, 'a view that only shows has no frame')
   assert.ok(find(chart, item => item.type === 'svg') !== undefined)
-  assert.equal(find(chart, item => item.type === 'figure').props['data-kind'], 'bar')
-  assert.ok(classed(chart, 'bt-chart-more') !== undefined, 'the chart has its menu button')
+  const figure = find(chart, item => item.type === 'figure')
+  assert.equal(figure.props['data-kind'], 'bar')
+  // The ⋯ menu sits in the card's head, not on the chart's axes (#476).
+  const head = classed(chart, 'bt-view-head')
+  assert.ok(find(head, item => typeof item.props?.className === 'string' && item.props.className.includes('bt-view-more')) !== undefined, 'the card head has the menu button')
+  assert.equal(find(figure, item => typeof item.props?.className === 'string' && (item.props.className.includes('bt-chart-more') || item.props.className.includes('bt-chart-tools'))), undefined, 'the chart itself has no menu')
+  // A view without a chart has no ⋯ button.
+  const metric = cell({ type: 'metric', label: 'Done', value: '3' })
+  assert.equal(find(metric, item => typeof item.props?.className === 'string' && item.props.className.includes('bt-view-more')), undefined)
   for (const kind of ['hbar', 'line', 'area', 'donut']) {
     assert.ok(find(cell({ type: 'chart', kind, categories: ['A', 'B'], series: [{ values: [3, 5] }] }), item => item.type === 'svg') !== undefined, kind)
   }
+
+  // The ⋯ menu groups per chart when the view holds more than one (#476).
+  const handle = (label, asTable = false) => ({ label, asTable, toggleTable: () => {}, copy: () => {}, save: () => {} })
+  const menuItems = node => findAll(node, item => item.props?.role === 'menuitem').map(text)
+  const single = expand(ViewMenuList({ charts: [handle('Revenue')], pick: run => run }))
+  assert.equal(findAll(single, item => item.props?.className === 'bt-view-menu-label').length, 0, 'one chart needs no group label')
+  assert.deepEqual(menuItems(single), ['View as table', 'Copy data', 'Download image'])
+  const pair = expand(ViewMenuList({ charts: [handle('Revenue'), handle(null, true), handle('Costs')], pick: run => run }))
+  const labels = findAll(pair, item => item.props?.className === 'bt-view-menu-label').map(text)
+  assert.deepEqual(labels, ['Revenue', 'Chart 2', 'Costs'], 'each group is named after its chart')
+  assert.equal(findAll(pair, item => item.props?.className === 'bt-menu-sep').length, 2, 'groups are separated')
+  assert.deepEqual(menuItems(pair), [
+    'View as table', 'Copy data', 'Download image',
+    'View as chart', 'Copy data', 'Download image',
+    'View as table', 'Copy data', 'Download image',
+  ], 'each chart keeps its three actions and its table state')
+  // A table switch must not re-register the chart: the groups keep mount order,
+  // so the toggled chart stays first and its item reads back as the table (#476).
+  const ordered = []
+  expand(WidgetView({
+    view: {
+      type: 'stack',
+      children: [
+        { type: 'chart', kind: 'bar', categories: ['A'], series: [{ values: [1] }], caption: 'One' },
+        { type: 'chart', kind: 'bar', categories: ['A'], series: [{ values: [2] }], caption: 'Two' },
+        { type: 'chart', kind: 'bar', categories: ['A'], series: [{ values: [3] }] },
+      ],
+    },
+    registerChart: (key, handle) => { ordered.push(handle); return () => { ordered.splice(ordered.indexOf(handle), 1) } },
+  }))
+  mount()
+  assert.equal(ordered.length, 3)
+  ordered[0].toggleTable()
+  const orderedMenu = expand(ViewMenuList({ charts: ordered, pick: run => run }))
+  assert.deepEqual(findAll(orderedMenu, item => item.props?.className === 'bt-view-menu-label').map(text), ['One', 'Two', 'Chart 3'], 'the toggled chart keeps its group position')
+  assert.deepEqual(menuItems(orderedMenu).slice(0, 3), ['View as chart', 'Copy data', 'Download image'], 'the first group shows the table state')
 
   const frame = find(cell({ type: 'html', html: '<b>hi</b>', summary: 'A greeting' }), item => item.type === 'iframe')
   assert.equal(frame.props.sandbox, 'allow-scripts')

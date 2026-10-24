@@ -205,6 +205,11 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           xvfb-run -a node scripts/check-packed.mjs
+      - name: Check the files for the release
+        # The dry run never uploads, so it checks here that every file the release attaches exists.
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          ls -l "dist-pack/DeepSeek-Bot-$version-linux-x86_64.AppImage" "dist-pack/DeepSeek-Bot-$version-linux-amd64.deb" dist-pack/latest-linux.yml
       - name: Keep the packages for real-device checks
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
@@ -221,7 +226,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
+        # The AppImage carries its block map inside the file, so there is no .blockmap to attach.
         run: |
           version="$(node -p "require('./package.json').version")"
-          appimage="dist-pack/DeepSeek-Bot-$version-linux-x86_64.AppImage"
-          gh release upload "$TAG" "$appimage" "$appimage.blockmap" "dist-pack/DeepSeek-Bot-$version-linux-amd64.deb" dist-pack/latest-linux.yml --clobber
+          gh release upload "$TAG" "dist-pack/DeepSeek-Bot-$version-linux-x86_64.AppImage" "dist-pack/DeepSeek-Bot-$version-linux-amd64.deb" dist-pack/latest-linux.yml --clobber

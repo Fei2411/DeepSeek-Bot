@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { apply, createRuntime } from '../index.js'
 import { gateScope } from '../src/host/browser/gate.js'
+import { appBrowserEndpoint } from '../src/host/browser-plugins.js'
+import { mountBrowserPlugin } from '../src/host/browser/mount.js'
 import { systemPrompt as refsPrompt, toolDefs as refsTools } from '../src/host/browser/refs.js'
 import { fakeApproval, fakeContext } from './fake-ctx.js'
 
@@ -90,6 +92,64 @@ function browserExec(botId = 'b2', sessionId = botId) {
   }
 }
 
+test('app browser endpoint carries download roots for the Bot resolved from the exec', async () => {
+  const originalSend = process.send
+  const roots = ['/workspace/b2', '/workspace']
+  let request
+  const tools = new Map()
+  let cleanup
+  process.send = (message, callback) => {
+    request = message
+    callback?.()
+    queueMicrotask(() => process.emit('message', {
+      type: 'ds-bot:browser-endpoint-response',
+      id: message.id,
+      url: 'ws://127.0.0.1:1234/devtools/browser/token',
+    }))
+    return true
+  }
+  try {
+    mountBrowserPlugin({
+      effect(create) { cleanup = create() },
+      tools: { register(tool) { tools.set(tool.name, tool) } },
+    }, {
+      toolDefs: [{ name: 'browser_open', needsBrowser: true, execute: () => 'opened' }],
+      defineTool: value => value,
+      keyOf: async exec => exec.agent.id,
+      profileRoot: '/profiles',
+      downloadRoot: '/legacy-downloads',
+      downloadRoots: async botId => {
+        assert.equal(botId, 'b2')
+        return roots
+      },
+      uploadRoots: async botId => {
+        assert.equal(botId, 'b2')
+        return roots
+      },
+      headless: true,
+      connect: appBrowserEndpoint,
+      openSession: async options => {
+        assert.equal(options.botId, 'b2')
+        assert.equal(options.downloadDir, roots[0])
+        assert.deepEqual(await options.uploadRoots(), roots)
+        await options.connect(options.botId)
+        return { close: async () => {} }
+      },
+    })
+    const result = await tools.get('browser_open').execute({ botId: 'other' }, { agent: { id: 'b2' } })
+    assert.deepEqual(request, {
+      type: 'ds-bot:browser-endpoint',
+      id: request.id,
+      botId: 'b2',
+      downloadRoots: roots,
+    })
+    assert.equal(result, 'opened')
+  } finally {
+    await cleanup?.()
+    process.send = originalSend
+  }
+})
+
 test('no browser plugin is mounted unless one is selected for the team', (t) => {
   const { ctx, stop } = start({})
   t.after(stop)
@@ -97,6 +157,36 @@ test('no browser plugin is mounted unless one is selected for the team', (t) => 
   assert.equal(ctx.registeredTools.has('browser_open'), false)
   assert.equal(ctx.registeredTools.has('browser_exec'), false)
   assert.equal(ctx.registeredTools.has('browser_task'), false)
+})
+
+test('user browser controls are not exposed as Bot tools', (t) => {
+  const { ctx, stop } = start({ browser: true, browserPlugin: 'refs' })
+  t.after(stop)
+  for (const name of ['browser-takeover', 'browser-give-back', 'browser-stop']) {
+    assert.equal(ctx.registeredTools.has(name), false)
+  }
+})
+
+test('browser-stop cancels the Bot chat, stops its room work, and sets a user hold', async (t) => {
+  const { rt, call, stop } = start({ browser: true })
+  t.after(stop)
+  await rt.load()
+
+  rt.state.rooms.room1 = { id: 'room1', members: ['b2'], sessions: { b2: 'room-session' } }
+  rt.state.rooms.room2 = { id: 'room2', members: ['m1'], sessions: { m1: 'other-session' } }
+  rt.live.set('b2', { turn: {} })
+  rt.live.set('room-session', { turn: {} })
+  const cancelled = []
+  const stoppedRooms = []
+  rt.resolveAgent = async sessionId => ({ cancel: reason => cancelled.push({ sessionId, reason }) })
+  rt.stopMemberWork = async (roomId, botId) => { stoppedRooms.push({ roomId, botId }) }
+
+  assert.equal((await call('browser-stop', { botId: 'b2' })).value, true)
+  assert.deepEqual(cancelled, [{ sessionId: 'b2', reason: { kind: 'user' } }])
+  assert.deepEqual(stoppedRooms, [{ roomId: 'room1', botId: 'b2' }])
+  assert.deepEqual(rt.browserChannel.holdOf('b2'), {
+    by: 'user', reason: 'stopped', note: 'The user is controlling this browser.',
+  })
 })
 
 test('the selected plugin is the same for every Bot, and profiles stay apart', async (t) => {

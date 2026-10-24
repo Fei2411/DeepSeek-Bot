@@ -291,7 +291,8 @@ export function install(rt) {
       bots[botId] = { since: entry.since, ...doingOf(entry), ...(owner ? { roomId: owner.roomId } : {}) }
     }
     for (const job of rt.switchJobs()) {
-      const work = { since: job.since, switching: true, ...(job.roomId ? { roomId: job.roomId } : {}) }
+      // `folder` marks the switch the chat must name: the working folder changed.
+      const work = { since: job.since, switching: true, ...(job.folder === true ? { folder: true } : {}), ...(job.roomId ? { roomId: job.roomId } : {}) }
       if (job.roomId === undefined) bots[job.botId] = work
       else bots[job.botId] ??= work
     }
@@ -317,7 +318,7 @@ export function install(rt) {
       if (entry.turn !== undefined && owner !== undefined) add(owner.roomId, owner.botId, { since: entry.since, ...doingOf(entry) })
     }
     for (const job of rt.switchJobs()) {
-      if (job.roomId !== undefined) add(job.roomId, job.botId, { since: job.since, switching: true })
+      if (job.roomId !== undefined) add(job.roomId, job.botId, { since: job.since, switching: true, ...(job.folder === true ? { folder: true } : {}) })
     }
     return rooms
   }

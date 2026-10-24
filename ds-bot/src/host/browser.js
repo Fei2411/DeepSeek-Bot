@@ -26,7 +26,10 @@ export function createBrowserChannel({ now = Date.now, waitMs = WAIT_MS, staleMs
   const clients = new Map()
   /** @type {Map<string, {client:any, resolve:(value:any) => void, timer:any}>} */
   const pending = new Map()
+  const holds = new Map()
+  const holdListeners = new Set()
   let nextId = 0
+  let holdVersion = 0
 
   const present = client => client.wake !== undefined || now() - client.seen < staleMs
   // The most recently seen window that shows this Bot's browser.
@@ -55,12 +58,16 @@ export function createBrowserChannel({ now = Date.now, waitMs = WAIT_MS, staleMs
    * `waitMs`. A newer poll from the same window ends the older one empty.
    */
   function wait(clientId, open) {
-    const client = clients.get(clientId) ?? { open: {}, seen: 0, queue: [] }
+    const client = clients.get(clientId) ?? { open: {}, seen: 0, queue: [], holdVersion: 0 }
     clients.set(clientId, client)
     client.open = open && typeof open === 'object' ? open : {}
     client.seen = now()
     client.end?.()
     const ready = due(client)
+    if (client.holdVersion !== holdVersion) {
+      client.holdVersion = holdVersion
+      return Promise.resolve(ready)
+    }
     if (ready.length > 0) return Promise.resolve(ready)
     const resend = client.queue.length === 0 ? waitMs
       : Math.max(0, Math.min(...client.queue.map(item => item.sentAt + resendMs - now())))
@@ -69,6 +76,7 @@ export function createBrowserChannel({ now = Date.now, waitMs = WAIT_MS, staleMs
         clearTimeout(timer)
         if (client.end === end) client.wake = client.end = undefined
         client.seen = now()
+        client.holdVersion = holdVersion
         resolve(items)
       }
       const end = () => finish([])
@@ -122,13 +130,32 @@ export function createBrowserChannel({ now = Date.now, waitMs = WAIT_MS, staleMs
     return pages
   }
 
+  function setHold(botId, hold) {
+    if (hold === null) holds.delete(botId)
+    else holds.set(botId, { by: hold.by, reason: hold.reason, note: hold.note })
+    holdVersion += 1
+    for (const client of clients.values()) client.wake?.()
+    for (const listener of holdListeners) {
+      try { listener(botId, holds.get(botId) ?? null) } catch {}
+    }
+    return holds.get(botId) ?? null
+  }
+
+  const holdOf = botId => holds.get(botId) ?? null
+  const holdSnapshot = () => Object.fromEntries(holds)
+
   function dispose() {
     for (const client of clients.values()) client.end?.()
     for (const id of [...pending.keys()]) settle(id, { error: 'DS Bot stopped before the page was read.' })
     clients.clear()
+    holds.clear()
   }
 
-  return { wait, result, read, openPages, dispose }
+  const subscribeHolds = listener => {
+    holdListeners.add(listener)
+    return () => holdListeners.delete(listener)
+  }
+  return { wait, result, read, openPages, setHold, holdOf, holdSnapshot, subscribeHolds, dispose }
 }
 
 const clean = (value, max) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max)

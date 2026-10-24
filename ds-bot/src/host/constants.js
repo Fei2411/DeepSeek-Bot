@@ -84,4 +84,4 @@ export const HISTORY_PAGE = 200
 export const HISTORY_PAGES_MAX = 50
 export const HISTORY_TIMEOUT_MS = 20_000
 // Shown when an aside stops at the route's own output limit. The partial answer stays.
-export const BTW_LIMIT = 'Answer cut off at the output limit.'
+export const ASIDE_LIMIT = 'Answer cut off at the output limit.'

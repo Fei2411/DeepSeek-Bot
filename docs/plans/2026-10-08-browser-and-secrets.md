@@ -20,9 +20,9 @@ Bot 要替用户在网上做事，就会碰到两类东西：网页，以及登�
 - 每个 Bot 有自己的浏览器面板，可以开多个标签页。每个标签页是一个 Electron webview，放在这个 Bot 自己的存储分区里（`bot:<id>`）。同一个 Bot 的标签页共用登录状态，不同 Bot 之间的 cookie 和登录状态不互通。
 - DSH Desktop 只把分区放在内存里，退出就没了。桌面应用把分区存在应用自己的目录里（不在数据位置里），退出再打开还是登录状态；删掉 Bot 时一起清掉。
 - 桌面应用自己提供浏览器桥，接口和 DSH Desktop 的一样。主进程只让它发过租约的 webview 挂上，并固定 webview 的设置：开沙箱、不给 Node、拒绝权限请求和下载、不许打开应用自己的本机端口；页面要开新窗口时改成同一个 Bot 的新标签。
-- 页面由用户操作。Bot 的 `read_browser` 只读当前标签页：标题、地址，以及可见内容转成的 Markdown。链接和控件在文中标成 `[#n]`，并列出目标。长页面分段读，用 `from` 接着读。
+- DSH Desktop 的页面由用户操作。Bot 的 `read_browser` 只读当前标签页：标题、地址，以及可见内容转成的 Markdown。桌面应用中，配置浏览器插件后 Bot 通过 Playwright 操作与用户面板相同的页面；接管和交还由用户控制。
 - 能读进 Web Components（open shadow DOM）和同源 iframe。读不了跨域 iframe（只给出它们的名字）、canvas 上画的字和隐藏的内容。
-- `read_browser` **不能点击、输入、滚动或打开页面**。工具说明里要求 Bot 把页面内容当作数据，不当作指令。
+- 在 DSH Desktop，`read_browser` **不能点击、输入、滚动或打开页面**。工具说明里要求 Bot 把页面内容当作数据，不当作指令。
 - 页面在应用窗口里，不在插件进程里。所以读取请求要经过窗口：客户端一直挂着一个长轮询（`browser-wait`），报告哪些 Bot 开着页面，并把读取请求带回窗口，窗口用 `browser-result` 回答。请求在窗口回答之前一直排队；轮询中断过的会重新发，窗口按 id 去重。
 - 所有 Bot、所有标签页加起来最多同时保留 6 个活着的页面（每个都是一个渲染进程）。超过时释放最久没看的那个，地址和摘要保留，再显示时重新加载。
 - 能打开本机和局域网的页面。云主机的元数据服务不能打开，因为它会发放账号凭据。
@@ -57,7 +57,7 @@ Bot 要替用户在网上做事，就会碰到两类东西：网页，以及登�
 
 ## 不做什么
 
-- Bot 不操作浏览器：不点击、不输入、不打开页面。
+- DSH Desktop 中 Bot 不操作浏览器：不点击、不输入、不打开页面。桌面应用的 Bot 浏览器行为见[浏览器插件](2026-10-21-browser-plugins.md)。
 - 不让 Bot 看到或输入密钥的值，不把值写进聊天记录、记忆、DSH 的 profile 或模型请求。
 - 联网搜索不借用别的路由的 key。
 
@@ -67,7 +67,7 @@ Bot 要替用户在网上做事，就会碰到两类东西：网页，以及登�
 - 历史消息里的链接还不能直接在 Bot 浏览器里打开（#114）。
 - 关掉 `auto` 搜索以后，`web_search` 可能报错，恢复方法见 #128。
 - 用 opencode 路由时，原生搜索缺少 `x-opencode-session`（#184）。
-- 导入 cookie 只在桌面应用里有（写进 Bot 自己的存储分区）：cookie 文件（Cookie-Editor JSON、cookies.txt、Playwright storageState）和本机 Chrome/Edge/Firefox 的 profile。Chromium 系是先克隆 profile、再让原浏览器自己解密，不是直接读文件。localStorage 等其他登录状态不导。
+- 导入 cookie 只在桌面应用里有（写进 Bot 自己的存储分区）：cookie 文件（Cookie-Editor JSON、cookies.txt、Playwright storageState）和本机 Chrome/Edge/Firefox 的 profile。Chromium 系是先克隆 profile、再让原浏览器自己解密，不是直接读文件。Windows 上 Chrome/Edge 的新 cookie 用 app-bound 加密（v20），只在原 user-data 目录里能解：克隆目录解不开，这些条目会标成跳过；如果整库都是 v20 会直接提示走文件导入。localStorage 等其他登录状态不导。
 - 密钥只防泄露到模型、记录和其他 Bot 的 shell。有权限的 Bot 在自己的 shell 里能用到值，所以给哪些 Bot 开放，要由用户判断。
 
 ## 变更
@@ -78,3 +78,4 @@ Bot 要替用户在网上做事，就会碰到两类东西：网页，以及登�
 - 2026-10-23：桌面应用里也有 Bot 浏览器，登录保存在应用自己的目录里，#449。
 - 2026-10-23：桌面应用的 Bot 浏览器能导入 cookie（文件和本机浏览器），#458。
 - 2026-10-21：操作浏览器改由可选插件来做，见 [浏览器插件](2026-10-21-browser-plugins.md)。不配插件时，这一篇的只读行为不变。
+- 2026-10-24：桌面应用中 Bot 操作浏览器面板的页面；用户接管、停止和交还控制权。用户接管只能由用户结束。

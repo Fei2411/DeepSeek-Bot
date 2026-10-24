@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { install as installBtw } from './btw.js'
+import { install as installSide } from './side.js'
 import { questionReply, viewReply } from './parts.js'
 import { defaultRelayLimit } from './groups.js'
 import { validateViewAnswer } from '../shared/views.js'
@@ -22,6 +23,7 @@ export function errorCode(error) {
 
 export function install(rt) {
   installBtw(rt)
+  installSide(rt)
   const { ctx, state } = rt
 
   // The DSH interface language of the last browser that asked for the team.
@@ -56,6 +58,9 @@ export function install(rt) {
     // Aside answers of each Bot's current part, newest first. Not part of the
     // model-visible history; earlier parts send their cards on their own pages.
     btwCards: rt.btwView?.() ?? {},
+    // Each Bot's side chats, in creation order. The answers never join the
+    // model-visible history; the side panel reads them here.
+    sideChats: rt.sideView?.() ?? {},
     // The team's DSH Agent (at most one): plain dsh Sessions, not Bots.
     agents: Object.values(state.agents),
     // Key names and who may use them; values never leave the host.
@@ -412,18 +417,30 @@ export function install(rt) {
           }, AbortSignal.timeout(30_000))
           return ok(true)
         }
-        // An aside on a snapshot of this Bot's private chat. The answer is not written
-        // into the Session; the card fills in after this returns.
-        case 'btw': {
-          if (typeof body.sessionId !== 'string') return fail('Nothing to ask', 'bot/invalid')
-          if (String(body.text ?? '').trim() === '') return fail('Write a question after /btw.', 'bot/invalid')
+        // Side chats in the Bot's panel: each question is an aside on a fresh
+        // snapshot of this Bot's private chat; the earlier finished pairs of
+        // that chat ride along. Nothing is written into the Session.
+        case 'side-new': {
+          if (typeof body.sessionId !== 'string' || body.sessionId === '') return fail('Nothing to open', 'bot/invalid')
           await rt.load()
-          return ok(await rt.askBtw({ sessionId: body.sessionId, text: String(body.text) }))
+          return ok(await rt.sideNew({ sessionId: body.sessionId }))
         }
-        case 'btw-cancel': {
-          if (typeof body.sessionId !== 'string' || typeof body.id !== 'string' || body.id === '') return fail('Nothing to cancel', 'bot/invalid')
+        case 'side-ask': {
+          if (typeof body.sessionId !== 'string' || body.sessionId === '') return fail('Nothing to ask', 'bot/invalid')
+          if (body.chatId !== undefined && typeof body.chatId !== 'string') return fail('Nothing to ask', 'bot/invalid')
+          if (String(body.text ?? '').trim() === '') return fail('Write a question.', 'bot/invalid')
           await rt.load()
-          return ok(await rt.cancelBtw({ sessionId: body.sessionId, id: body.id }))
+          return ok(await rt.sideAsk({ sessionId: body.sessionId, chatId: body.chatId, recent: body.recent === true, text: String(body.text) }))
+        }
+        case 'side-cancel': {
+          if (typeof body.chatId !== 'string' || body.chatId === '' || typeof body.entryId !== 'string' || body.entryId === '') return fail('Nothing to cancel', 'bot/invalid')
+          await rt.load()
+          return ok(await rt.sideCancel({ chatId: body.chatId, entryId: body.entryId }))
+        }
+        case 'side-close': {
+          if (typeof body.chatId !== 'string' || body.chatId === '') return fail('Nothing to close', 'bot/invalid')
+          await rt.load()
+          return ok(await rt.sideClose({ chatId: body.chatId }))
         }
         case 'update-check': {
           const fresh = body.fresh === true
@@ -441,11 +458,44 @@ export function install(rt) {
           const clientId = typeof body.clientId === 'string' ? body.clientId.slice(0, 100) : ''
           if (clientId === '') return fail('A browser poll needs a clientId', 'bot/invalid')
           await rt.load()
-          return ok(await rt.browserChannel.wait(clientId, rt.browserOpen(body.open)))
+          const requests = await rt.browserChannel.wait(clientId, rt.browserOpen(body.open))
+          return ok({ requests, holds: rt.browserChannel.holdSnapshot() })
         }
         case 'browser-result':
           if (rt.browserChannel === undefined) return fail('Bot browsers are off on this host', 'bot/browser-off')
           return ok(rt.browserChannel.result(body))
+        case 'browser-takeover': {
+          if (rt.browserChannel === undefined) return fail('Bot browsers are off on this host', 'bot/browser-off')
+          await rt.load()
+          const botId = String(body.botId ?? '')
+          if (!rt.botOf(botId)) return fail('Unknown Bot', 'bot/not-found')
+          rt.browserChannel.setHold(botId, { by: 'user', reason: 'takeover', note: 'The user is controlling this browser.' })
+          return ok(true)
+        }
+        case 'browser-give-back': {
+          if (rt.browserChannel === undefined) return fail('Bot browsers are off on this host', 'bot/browser-off')
+          await rt.load()
+          const botId = String(body.botId ?? '')
+          if (!rt.botOf(botId)) return fail('Unknown Bot', 'bot/not-found')
+          if (rt.browserChannel.holdOf(botId) === null) return fail('This browser is not held', 'bot/forbidden')
+          rt.browserChannel.setHold(botId, null)
+          return ok(true)
+        }
+        case 'browser-stop': {
+          await rt.load()
+          const botId = String(body.botId ?? '')
+          if (!rt.botOf(botId)) return fail('Unknown Bot', 'bot/not-found')
+          const sessionId = rt.chatOf(botId)
+          if (sessionId && rt.live.get(sessionId)?.turn !== undefined) {
+            const agent = await rt.resolveAgent(sessionId)
+            agent.cancel({ kind: 'user' })
+          }
+          for (const room of Object.values(rt.state.rooms ?? {})) {
+            if (room.members?.includes(botId)) await rt.stopMemberWork?.(room.id, botId)
+          }
+          rt.browserChannel?.setHold(botId, { by: 'user', reason: 'stopped', note: 'The user is controlling this browser.' })
+          return ok(true)
+        }
         case 'diagnostics':
           await rt.load()
           return ok(await rt.diagnostics.report(body))
@@ -481,7 +531,8 @@ export function install(rt) {
   ctx.effect(() => {
     void rt.load()
     // Registered last, so this disposer runs before the state lock is released.
-    // In-flight asides abort here; their cards stay answering for the next owner.
-    return () => rt.btwDispose?.()
+    // In-flight side questions abort here; their entries stay answering for the
+    // next owner.
+    return () => Promise.all([rt.btwDispose?.(), rt.sideDispose?.()])
   }, 'ds-bot: load state')
 }
