@@ -444,6 +444,8 @@ export function install(rt) {
       archiveBotMemory: async () => {},
       archiveGroupMemory: async () => {},
       memoryEndpoint: async () => { throw new Error('Memory is turned off on this host') },
+      memoryEdit: async () => { throw new Error('Memory is turned off on this host') },
+      memoryAdd: async () => { throw new Error('Memory is turned off on this host') },
       memoryNews: () => ({}),
       memoryReviews: () => 0,
     })
@@ -1221,6 +1223,32 @@ export function install(rt) {
     return memoryView(panelBody(panel))
   }
 
+  // The user's own words for one entry, from a window that edits the list in place
+  // (the mobile API): no model call, the same checks as the tools.
+  const userEntry = (raw) => {
+    const text = cleanEntry(raw)
+    const problem = entryProblem(text)
+    if (problem) throw Object.assign(new Error(problem), { code: 'bot/invalid' })
+    return text
+  }
+  const userTopic = raw => (raw === null || raw === undefined || raw === '' ? undefined : cleanTopic(raw))
+  async function memoryEdit(body) {
+    const panel = panelOf(body)
+    const scope = panel.scopes[body.scope] ?? panel.scopes[panel.group ? 'group' : 'own']
+    const text = userEntry(body.next)
+    const meta = { source: 'memory panel', by: 'user', added: today() }
+    await replaceEntry({ scope, topic: userTopic(body.topic), match: String(body.text ?? ''), text, meta, actor: USER, label: panelLabel(panel, scope) })
+    return memoryView(panelBody(panel))
+  }
+  async function memoryAdd(body) {
+    const panel = panelOf(body)
+    const scope = panel.scopes[body.scope] ?? panel.scopes[panel.group ? 'group' : 'own']
+    const text = userEntry(body.text)
+    const meta = { source: 'memory panel', by: 'user', added: today() }
+    await addEntry({ scope, topic: userTopic(body.topic), text, meta, actor: USER, label: panelLabel(panel, scope) })
+    return memoryView(panelBody(panel))
+  }
+
   // ---------------------------------------------------------------------------
   // The memory review. When a conversation goes idle, a model reads what is new there
   // and keeps, changes, or removes entries, as a person would after a talk. A Bot's own
@@ -1550,7 +1578,7 @@ export function install(rt) {
   }
 
   Object.assign(rt, {
-    memoryEnabled: true, renewMemory, archiveBotMemory, archiveGroupMemory, memoryEndpoint, memoryReviews,
+    memoryEnabled: true, renewMemory, archiveBotMemory, archiveGroupMemory, memoryEndpoint, memoryEdit, memoryAdd, memoryReviews,
     memoryNews: () => Object.fromEntries(news),
   })
 }

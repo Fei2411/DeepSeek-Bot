@@ -30,6 +30,7 @@ export function install(rt) {
     }
     pending.set(id, entry)
     rt.noteApproval?.(sessionId, { tool: entry.tool, reason: entry.reason.slice(0, 200) })
+    rt.approvalWaiting?.(entry)
     const settled = () => {
       pending.delete(id)
       rt.noteApproval?.(sessionId, undefined)

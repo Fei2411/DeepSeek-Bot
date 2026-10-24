@@ -4,6 +4,10 @@
 //   live      work changed without a new revision: ask for `state` again
 //   message   a new entry of a Bot's own chat, as the `chat` endpoint returns it
 //   stream    the reply a Bot is writing: a start, its text as it comes, an end
+//   notice    something a client that is not looking should hear about (mobile.js)
+//   room      a group chat changed: ask for `room-chat` again
+// `hello` carries the team's revision and, for the mobile API, its version and the
+// latest notice, so a client that reconnects knows what it missed.
 import { ROUTE } from './constants.js'
 
 export const FEED_ROUTE = `${ROUTE}/feed`
@@ -27,18 +31,36 @@ export function install(rt) {
     }
     try { controller.enqueue(chunk) } catch { clients.delete(controller) }
   }
+  // Readers of the Remote stream `dsBot/feed` (remote.js), which a relay can carry.
+  /** @type {Set<(event: string, data: unknown) => void>} */
+  const listeners = new Set()
+  const watched = () => clients.size > 0 || listeners.size > 0
   const publish = (event, data) => {
     const chunk = encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
     for (const controller of clients) send(controller, chunk)
+    for (const listener of listeners) listener(event, data)
+  }
+  const hello = () => ({ revision: state.revision, ...(rt.noticeCursor ? { api: rt.apiVersion, ...rt.noticeCursor() } : {}) })
+  // The same events as the HTTP feed, starting with its `hello`; returns the unsubscribe.
+  rt.subscribeFeed = (listener) => {
+    listeners.add(listener)
+    listener('hello', hello())
+    return () => {
+      listeners.delete(listener)
+      if (!watched()) writing.clear()
+    }
   }
 
   rt.stateSaved = () => {
-    if (clients.size > 0) publish('revision', { revision: state.revision })
+    if (watched()) publish('revision', { revision: state.revision })
+  }
+  rt.publishFeed = (event, data) => {
+    if (watched()) publish(event, data)
   }
 
   let liveTimer
   const live = () => {
-    if (clients.size === 0 || liveTimer !== undefined) return
+    if (!watched() || liveTimer !== undefined) return
     liveTimer = setTimeout(() => {
       liveTimer = undefined
       publish('live', {})
@@ -49,7 +71,7 @@ export function install(rt) {
   })
 
   ctx.on('session/event', (session, event) => {
-    if (clients.size === 0) return
+    if (!watched()) return
     const botId = rt.chatOwners.get(session.id)
     if (botId === undefined) return
     for (const item of rt.displayItems(session.id, [event])) publish('message', { botId, sessionId: session.id, item })
@@ -62,7 +84,7 @@ export function install(rt) {
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     if (frame.type === 'start') {
       const botId = rt.chatOwners.get(agent.id)
-      if (clients.size === 0 || botId === undefined || (state.exchangeTurns[agent.id] ?? []).includes(frame.turn)) return
+      if (!watched() || botId === undefined || (state.exchangeTurns[agent.id] ?? []).includes(frame.turn)) return
       writing.set(frame.attemptId, { botId, sessionId: agent.id })
       publish('stream', { botId, sessionId: agent.id, attemptId: frame.attemptId, phase: 'start' })
       return
@@ -78,7 +100,7 @@ export function install(rt) {
 
   const leave = (controller) => {
     clients.delete(controller)
-    if (clients.size === 0) writing.clear()
+    if (!watched()) writing.clear()
     try { controller.close() } catch { /* already closed or errored */ }
   }
 
@@ -92,7 +114,7 @@ export function install(rt) {
         start(own) {
           controller = own
           clients.add(own)
-          send(own, encoder.encode(`event: hello\ndata: ${JSON.stringify({ revision: state.revision })}\n\n`))
+          send(own, encoder.encode(`event: hello\ndata: ${JSON.stringify(hello())}\n\n`))
         },
         cancel() { leave(controller) },
       })

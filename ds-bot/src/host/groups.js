@@ -185,9 +185,11 @@ export function install(rt) {
 
   const appendRoom = (room, line) => {
     room.seq += 1
-    const log = [...room.log, keepGroupLine(room.id, { ...line, seq: room.seq }, line.text ?? '')]
+    const kept = keepGroupLine(room.id, { ...line, seq: room.seq }, line.text ?? '')
+    const log = [...room.log, kept]
     for (const gone of log.slice(0, -ROOM_LOG_MAX)) dropGroupLine(room.id, gone)
     room.log = log.slice(-ROOM_LOG_MAX)
+    rt.roomLineAdded?.(room, kept)
   }
   Object.assign(rt, { keepGroupLine, dropGroupLines })
 
