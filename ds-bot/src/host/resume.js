@@ -4,11 +4,18 @@
 // ever run either again, and whoever waited for them was not told. DS Bot notes each
 // running Bot turn and each message it delivers until a turn takes it up, in
 // inflight.json; what is still noted at the next start is picked up once.
+//
+// A turn that ends while DS Bot is not watching it (the plugin reloaded, DSH went on)
+// is settled from the Session's durable log: an answer that was produced goes to the Bot
+// that waits for it, and an outcome that cannot be read is said to be unknown. The
+// request itself is never sent again there.
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { SOURCE_KIND } from './constants.js'
+import { HISTORY_TIMEOUT_MS, MESSAGE_INLINE_MAX, SOURCE_KIND } from './constants.js'
+import { answerSender, failureLine, turnFailure } from './turns.js'
+import { textOf } from './text.js'
 
 // Long enough for DSH to finish opening its workspaces after a start.
 export const RESUME_DELAY_MS = 3000
@@ -21,6 +28,47 @@ export const resumeText = record => [
   record.approval ? `You were waiting for the user's approval to run ${record.approval.tool || 'a tool'}${record.approval.reason ? ` (${record.approval.reason})` : ''}; that request is gone, so ask again if you still need it.` : '',
   'Check what is already done (files, commands, messages) before you repeat anything, then finish the task and give your reply.',
 ].filter(Boolean).join(' ')
+
+// The turns of a Session's durable log, each with the exchanges it took up, what it
+// said and how it ended.
+export function turnsOf(events) {
+  const turns = []
+  let current
+  for (const event of events) {
+    if (event.type === 'turn/start') {
+      current = { turn: event.data?.turn, took: [], texts: [], reason: undefined }
+      turns.push(current)
+      continue
+    }
+    if (current === undefined) continue
+    if (event.type === 'user/message') {
+      const source = event.data?.source
+      if (source?.exchangeId !== undefined) current.took.push(source)
+      continue
+    }
+    if (event.type === 'assistant/message') {
+      const text = textOf(event.data?.message?.content)
+      if (text !== '') current.texts.push(text)
+      continue
+    }
+    if (event.type === 'turn/end') current.reason = event.data?.reason
+  }
+  return turns
+}
+
+// The last turn that took up an exchange: what it said and how it ended.
+export function turnOf(events, exchangeId) {
+  const turns = turnsOf(events)
+  for (let at = turns.length - 1; at >= 0; at -= 1) {
+    if (turns[at].took.some(source => source.exchangeId === exchangeId)) return turns[at]
+  }
+  return undefined
+}
+
+// Whether a Session already holds the answer to an exchange.
+export function answeredIn(events, exchangeId) {
+  return events.some(event => event.type === 'user/message' && event.data?.source?.replyTo === exchangeId)
+}
 
 // The trigger fields a resumed turn needs to answer the same sender.
 const triggerOf = info => ({
@@ -131,7 +179,9 @@ export function install(rt) {
   ctx.on('session/event', (session, event) => {
     const id = session?.id
     if (id === undefined) return
-    if ((event.type === 'turn/start' || event.type === 'turn/end') && firstTurn?.has(id) === false) firstTurn.set(id, event.type)
+    if ((event.type === 'turn/start' || event.type === 'turn/end') && firstTurn?.has(id) === false) {
+      firstTurn.set(id, { type: event.type, turn: event.data?.turn, reason: event.data?.reason })
+    }
     if (event.type === 'user/message' && event.data?.source?.kind === SOURCE_KIND && event.data.source.exchangeId) {
       taken?.add(event.data.source.exchangeId)
       forgetQueued(event.data.source.exchangeId)
@@ -211,6 +261,99 @@ export function install(rt) {
     }
   }
 
+  // A Session's durable log, as DSH keeps it: what happened there, and what it said.
+  // Undefined when this DSH cannot read it, or when the Session is gone.
+  async function logOf(sessionId) {
+    const inspect = ctx.sessionController?.inspect
+    if (typeof inspect !== 'function') return undefined
+    const seen = await inspect(sessionId, AbortSignal.timeout(HISTORY_TIMEOUT_MS)).catch(() => undefined)
+    return Array.isArray(seen?.events) ? seen.events : undefined
+  }
+
+  // A turn that ended while DS Bot was not watching it: its answer may exist and never
+  // have gone to the Bot that waits for it. The Session's durable log says what it did;
+  // the work it was for is settled once, the way a finished turn settles it.
+  async function reconcileEnded(sessionId, record, ended) {
+    const trigger = record.trigger
+    if (trigger === undefined) return
+    if (trigger.role !== 'request' || trigger.audience === 'user') return
+    const exchangeId = trigger.exchangeId
+    const sender = trigger.senderSessionId
+    if (exchangeId === undefined || sender === undefined || rt.botOf(sender) === undefined) return
+    // The work it was for: gone when the answer already went up.
+    const work = rt.state.works?.[exchangeId]
+    if (work === undefined) return
+    const name = rt.botOf(rt.selfOf(sessionId))?.name ?? 'The other Bot'
+    const asker = rt.workAsker(exchangeId)
+    if (asker === undefined) return
+    // DSH stopped that turn as it shut down: it is picked up at the next start.
+    if (ended.reason?.kind === 'aborted' && ended.reason.reason?.kind === 'disposed') {
+      update(sessionId, () => record)
+      return
+    }
+    const events = await logOf(sessionId)
+    if (events === undefined) {
+      // The record of that work cannot be read: whether it answered cannot be
+      // established. The sender is told that, and the work is not run again.
+      const why = 'the record of that work could not be read'
+      const text = `${name} could not answer your message: ${why}, so what it did is unknown (its session is ${sessionId}). It may have done part of the work. Tell the user if it matters; do not run the work again without asking.`
+      const room = rt.roomOf(rt.groupOwners.get(sessionId)?.roomId)
+      rt.noteFailure?.({
+        level: 'warn',
+        source: 'turn',
+        text: `the result of the work ${name} was given is unknown`,
+        bot: name,
+        where: room === undefined ? 'own chat' : `group "${room.name}"`,
+        sessionId,
+      })
+      answerSender(rt, sessionId, asker, text)
+      return
+    }
+    const turn = turnOf(events, exchangeId)
+    // The request was never taken up: it is still waiting, and the delivery that is
+    // waiting for it keeps what it had.
+    if (turn === undefined) return
+    const said = turn.texts.join('\n\n')
+    // The answer went up in another run: the work closes with what it said, and
+    // nothing is sent twice.
+    const back = rt.roomOf(trigger.senderRoomId)?.sessions?.[sender]
+    const sent = await logOf(back ?? rt.chatOf(sender))
+    if (sent !== undefined && answeredIn(sent, exchangeId)) {
+      rt.closeWork?.(exchangeId, name, rt.answerText(exchangeId, said, name))
+      return
+    }
+    const reason = turn.reason
+    // A turn that went on to a fresh part goes on there; it is not settled here.
+    if (reason?.kind === 'blocked') return
+    // The turn was cut off before it finished: the work is picked up again, as after
+    // a restart that cut it off.
+    if (reason === undefined || reason.kind === 'interrupted') {
+      await resumeTurn(sessionId, record)
+      return
+    }
+    if (reason.kind === 'error') {
+      const failure = turnFailure(reason.error)
+      answerSender(rt, sessionId, asker, `${name} could not answer your message: its model call failed (${failureLine(failure)}). Tell the user if it matters; do not retry right away.`)
+      return
+    }
+    if (reason.kind === 'aborted') {
+      // The turn was stopped before it could answer: the sender is told, as it is told
+      // when DS Bot watches the turn end.
+      answerSender(rt, sessionId, asker, `${name} was stopped before it could answer your message.`)
+      return
+    }
+    // The turn ended with what it said: the answer goes up the way a finished turn's
+    // does, with the results that came back for it and the text it held. A work that
+    // still waits for what it handed on keeps its part until that comes back.
+    if (rt.waitsWork(exchangeId)) {
+      rt.holdWork(exchangeId, said)
+      return
+    }
+    const text = rt.answerText(exchangeId, said, name)
+    const long = text.length > MESSAGE_INLINE_MAX ? await rt.attachLong(text, `Answer from ${name}.txt`) : undefined
+    answerSender(rt, sessionId, asker, text, long)
+  }
+
   async function resumeAll() {
     await rt.load()
     if (rt.readOnly() !== undefined) return
@@ -222,7 +365,12 @@ export function install(rt) {
     const cut = []
     for (const [sessionId, record] of Object.entries(noted)) {
       const first = firstTurn.get(sessionId)
-      if (first === 'turn/end') continue
+      if (first?.type === 'turn/end') {
+        // The turn ended while DS Bot was not watching it: what it did is settled from
+        // the Session's durable log.
+        await reconcileEnded(sessionId, record, first).catch(error => rt.warn('ds-bot: settling the work of %s failed: %s', sessionId, error))
+        continue
+      }
       // Still running: noted again, as if it had started here.
       if (first === undefined && (await rt.resolveAgent(sessionId).catch(() => undefined))?.status === 'running') update(sessionId, () => record)
       else cut.push([sessionId, record])
