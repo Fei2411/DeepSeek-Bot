@@ -777,7 +777,8 @@ test('in a group with a folder of its own a member stays inside it; without one 
   assert.equal((await call('update-room', { id: 'r1', workDir: '' })).ok, true)
   const own = await changeDirectory(ctx, service, agentOf('gb'), project)
   assert.equal(own.ran, true)
-  assert.equal(state().bots.b.workDir, project)
+  assert.equal(state().rooms.r1.memberDirs.b, project)
+  assert.equal(state().bots.b.workDir, undefined)
   assert.equal(state().rooms.r1.workDir, undefined)
 })
 
@@ -837,4 +838,161 @@ test('a Bot changes back to the team workspace when the team workspace is known 
   assert.equal(back.ran, true)
   assert.equal(state().bots.b.workDir, undefined)
   assert.equal(requests.length, 0)
+})
+
+// A folder a member picks inside a group is kept on the room, per member: it holds
+// for that conversation's next parts, and nowhere else.
+const TWO_ROOMS = {
+  ...TEAM.rooms,
+  r2: { id: 'r2', name: 'Cuda', members: ['a', 'b'], mode: 'admin', admin: 'a', named: true, sessions: { b: 'gb2' } },
+}
+
+test('a folder a member picks in one group holds only there, not in its other groups or its own chat', async (t) => {
+  const { service } = folderService()
+  const { requests, services } = approvalServices('allowed-once')
+  const { ctx, call, agentOf, created, root, state, preStep, stop } = await start({ services: { ...services, workingDirectory: service }, team: { ...TEAM, rooms: TWO_ROOMS } })
+  t.after(stop)
+  const own = join(root, 'cuda')
+  const ascend = join(root, 'ascend')
+  mkdirSync(own)
+  mkdirSync(ascend)
+  assert.equal((await call('update-bot', { id: 'b', workDir: own })).ok, true)
+  await until(() => state().bots.b.sessionId === 's1')
+  // The member's group Sessions were made in its own folder.
+  agentOf('gb').session.header.cwd = own
+  agentOf('gb2').session.header.cwd = own
+
+  const moved = await changeDirectory(ctx, service, agentOf('gb'), ascend)
+  assert.equal(moved.ran, true)
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].toolName, 'working_directory')
+  assert.equal(state().rooms.r1.memberDirs.b, ascend)
+  // Neither the Bot's folder, its conversation in the other group, nor its own chat moved.
+  assert.equal(state().bots.b.workDir, own)
+  assert.equal(state().rooms.r1.workDir, undefined)
+  assert.equal(await preStep('gb2'), 'next')
+  assert.equal(await preStep('s1'), 'next')
+  assert.deepEqual(created.map(options => options.cwd).filter(Boolean), [own])
+
+  // Its conversation in this group moves on to a fresh part in the new folder.
+  assert.deepEqual(await preStep('gb'), { kind: 'reject' })
+  await until(() => state().rooms.r1.sessions.b === 's2')
+  assert.deepEqual(created.at(-1), { cwd: ascend })
+  assert.equal(state().rooms.r2.sessions.b, 'gb2')
+  assert.equal(state().bots.b.sessionId, 's1')
+})
+
+test('a member that changes to the team workspace in a group stays there, not back in its own folder', async (t) => {
+  const { service } = folderService()
+  const { services } = approvalServices('allowed-once')
+  const { ctx, call, agentOf, created, root, team, state, preStep, stop } = await start({ services: { ...services, workingDirectory: service } })
+  t.after(stop)
+  const own = join(root, 'cuda')
+  mkdirSync(own)
+  assert.equal((await call('update-bot', { id: 'b', workDir: own })).ok, true)
+  await until(() => state().bots.b.sessionId === 's1')
+  agentOf('gb').session.header.cwd = own
+
+  const moved = await changeDirectory(ctx, service, agentOf('gb'), team)
+  assert.equal(moved.ran, true)
+  assert.equal(state().rooms.r1.memberDirs.b, null)
+  assert.equal(state().bots.b.workDir, own)
+  assert.deepEqual(await preStep('gb'), { kind: 'reject' })
+  await until(() => state().rooms.r1.sessions.b === 's2')
+  assert.deepEqual(created.at(-1), { workspaceId: 'w1' })
+})
+
+test('a member\'s folder pick in a group goes with the group\'s folder setting or the member', async (t) => {
+  const { service } = folderService()
+  const { services } = approvalServices('allowed-once')
+  const three = {
+    ...TEAM,
+    bots: { ...TEAM.bots, c: { id: 'c', name: 'Tester', role: 'Test', sessionId: 'c', createdAt: 3 } },
+    rooms: { r1: { ...TEAM.rooms.r1, members: ['a', 'b', 'c'] } },
+  }
+  const { ctx, call, agentOf, project, state, stop } = await start({ services: { ...services, workingDirectory: service }, team: three })
+  t.after(stop)
+  assert.equal((await changeDirectory(ctx, service, agentOf('gb'), project)).ran, true)
+  assert.equal(state().rooms.r1.memberDirs.b, project)
+  // Setting the group's folder overrides every pick, and clearing it does not bring one back.
+  assert.equal((await call('update-room', { id: 'r1', workDir: project })).ok, true)
+  assert.equal(state().rooms.r1.memberDirs, undefined)
+  assert.equal((await call('update-room', { id: 'r1', workDir: '' })).ok, true)
+  assert.equal((await changeDirectory(ctx, service, agentOf('gb'), project)).ran, true)
+  assert.equal(state().rooms.r1.memberDirs.b, project)
+  assert.equal((await call('update-room', { id: 'r1', remove: ['b'] })).ok, true)
+  assert.equal(state().rooms.r1.memberDirs?.b, undefined)
+})
+
+test('setting a group folder points that group\'s own Session, and clearing it points back', async (t) => {
+  const { call, created, agentOf, preStep, project, team, state, stop } = await start()
+  t.after(stop)
+  assert.equal((await call('update-room', { id: 'r1', workDir: project })).ok, true)
+  assert.equal(state().rooms.r1.id, 'r1')
+  assert.equal(agentOf('r1').session.header.cwd, project)
+  assert.equal(state().rooms.r1.sessions.b, 'gb')
+  assert.deepEqual(created, [])
+
+  assert.deepEqual(await preStep('gb'), { kind: 'reject' })
+  await until(() => state().rooms.r1.sessions.b === 's1')
+  assert.deepEqual(created, [{ cwd: project }])
+  assert.equal(state().rooms.r1.id, 'r1')
+  assert.equal(agentOf('r1').session.header.cwd, project)
+
+  assert.equal((await call('update-room', { id: 'r1', workDir: '' })).ok, true)
+  assert.equal(state().rooms.r1.workDir, undefined)
+  assert.equal(state().rooms.r1.id, 'r1')
+  assert.equal(agentOf('r1').session.header.cwd, team)
+  assert.equal(state().rooms.r1.sessions.b, 's1')
+})
+
+test('a frozen group Session header is replaced in memory', async (t) => {
+  const { call, agentOf, project, team, state, created, stop } = await start()
+  t.after(stop)
+  const session = agentOf('r1').session
+  const previous = session.header
+  Object.freeze(previous)
+  assert.equal((await call('update-room', { id: 'r1', workDir: project })).ok, true)
+  assert.equal(previous.cwd, team)
+  assert.equal(session.header.cwd, project)
+  assert.notEqual(session.header, previous)
+  assert.equal(state().rooms.r1.id, 'r1')
+  assert.deepEqual(created, [])
+})
+
+test('pointing a saved group folder does not hold up the team view', async (t) => {
+  const env = await start()
+  t.after(env.stop)
+  assert.equal((await env.call('update-room', { id: 'r1', workDir: env.project })).ok, true)
+  assert.equal(env.agentOf('r1').session.header.cwd, env.project)
+  env.agentOf('r1').session.header.cwd = env.team
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const resolveAgent = env.ctx.sessionController.resolveAgent
+  env.ctx.sessionController.resolveAgent = async (id) => {
+    if (id === 'r1') await gate
+    return resolveAgent(id)
+  }
+  const view = await Promise.race([
+    env.call('state', {}),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('state waited for the group Session')), 300)),
+  ])
+  assert.equal(view.ok, true)
+  assert.equal(env.agentOf('r1').session.header.cwd, env.team)
+  release()
+  await until(() => env.agentOf('r1').session.header.cwd === env.project)
+  env.agentOf('r1').session.header.cwd = env.team
+  assert.equal((await env.call('state', {})).ok, true)
+  await settle()
+  assert.equal(env.agentOf('r1').session.header.cwd, env.team)
+})
+
+test('a group Session that cannot be opened still saves the folder', async (t) => {
+  const env = await start()
+  t.after(env.stop)
+  env.ctx.sessionController.resolveAgent = async () => { throw new Error('down') }
+  assert.equal((await env.call('update-room', { id: 'r1', workDir: env.project })).ok, true)
+  assert.equal(env.state().rooms.r1.workDir, env.project)
+  assert.equal(env.state().rooms.r1.id, 'r1')
+  assert.equal((await env.call('state', {})).ok, true)
 })

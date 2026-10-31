@@ -380,7 +380,9 @@ export function install(rt) {
   // DSH's working_directory changes a Session's folder in place, and the next part starts in
   // the Bot's working folder again. A Bot that changes to a folder outside its working folder
   // sets its working folder instead, with update_bot's checks, and goes on in a fresh part
-  // there; a folder inside it only moves this Session there.
+  // there; a folder inside it only moves this Session there. In a group without a folder of
+  // its own the change holds only for that conversation: the Bot's folder, its other groups
+  // and its own chat keep theirs (folders.js memberDirs).
   ctx.on('tools/execute', async (exec, next) => {
     // Resolved as DSH gets it, untrimmed, so that both mean the same folder.
     const cd = exec.name === WORKING_DIRECTORY_TOOL && typeof exec.arguments?.cd === 'string' ? exec.arguments.cd : ''
@@ -399,6 +401,18 @@ export function install(rt) {
     // Saved folders are trimmed like typed ones, so such a name would save another folder.
     if (unquote(target) !== target) throw new Error(`${JSON.stringify(target)} cannot be a working folder: its name starts or ends with a space or a quote mark.`)
     const workDir = await rt.workFolder(target)
+    if (room !== undefined) {
+      // The folder holds only for this group conversation, so only this Session's
+      // writes widen; the private-Bot check is the one updateBot would run.
+      await rt.checkPrivacyChange(bot, { moving: true, workDir })
+      await rt.approveFolder(exec, { path: workDir, sessions: [exec.agent.id], who: { en: bot.name, zh: ` ${bot.name} ` } })
+      const result = await next()
+      if (result?.isError !== true) {
+        ;(room.memberDirs ??= {})[bot.id] = workDir ?? null
+        await rt.save()
+      }
+      return result
+    }
     await rt.approveFolder(exec, { path: workDir, sessions: rt.sessionsOfBot(bot.id), who: { en: bot.name, zh: ` ${bot.name} ` } })
     const result = await next()
     if (result?.isError !== true) await rt.updateBot(bot.id, { workDir: workDir ?? '' }, rt.selfOf(exec.agent?.id))

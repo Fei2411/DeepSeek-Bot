@@ -176,13 +176,15 @@ export function install(rt) {
       delete room.botRounds
       migrated = true
     }
-    // LEGACY: the late-round limit went with the round caps; a group counts relays to
-    // its pause now.
+    // LEGACY: the late-round limit went with the round caps, and the relay limit that
+    // followed it went too. Calls it parked stay until the group's next round runs them.
     for (const room of Object.values(state.rooms)) {
-      if (room.lateRounds === undefined && room.quietNoticed === undefined && room.quietShown === undefined) continue
+      if (['lateRounds', 'quietNoticed', 'quietShown', 'relays', 'relayLimit'].every(key => room[key] === undefined)) continue
       delete room.lateRounds
       delete room.quietNoticed
       delete room.quietShown
+      delete room.relays
+      delete room.relayLimit
       migrated = true
     }
     // Groups from before group settings existed reply in turn, led by a Main Bot member.
@@ -384,6 +386,7 @@ export function install(rt) {
   const isBotSession = id => chatOwners.has(id) || groupOwners.has(id)
   const groupSessionsOf = botId => Object.values(state.rooms).map(room => room.sessions?.[botId]).filter(Boolean)
   const dropGroupSession = (room, botId) => {
+    if (room.memberDirs !== undefined) delete room.memberDirs[botId]
     const sessionId = room.sessions?.[botId]
     if (sessionId === undefined) return
     delete room.sessions[botId]

@@ -39,6 +39,8 @@ test('apply registers listeners, tools, and effects in a fixed order', (t) => {
     'on llm/adapters-updated',
     'on credentials/reference-updated',
     'on settings/document-updated',
+    'on subagent/start',
+    'on subagent/end',
     'on session/event',
     'on session/event',
     'on tools/execute',

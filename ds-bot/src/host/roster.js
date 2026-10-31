@@ -425,10 +425,60 @@ export function install(rt) {
     return holdName('room', custom, () => buildRoom({ members, custom, notice, mode, adminId, createdBy }))
   }
 
+  // A group's own Session already exists, so a folder change cannot make it again.
+  // The header is frozen and keys the log, so only the live header moves. `still`
+  // is false when a later change already picked another folder.
+  async function pointSession(sessionId, cwd, still) {
+    try {
+      const agent = await rt.resolveAgent(sessionId)
+      if (still !== undefined && !still()) return
+      const session = agent?.session
+      const header = session?.header
+      if (header === undefined || header.cwd === cwd) return
+      try {
+        header.cwd = cwd
+      } catch {
+        try {
+          session.header = { ...header, cwd }
+        } catch (error) {
+          rt.warn('ds-bot: group chat Session %s stays where it was; it could not move to %s: %s', sessionId, cwd, error)
+        }
+      }
+    } catch (error) {
+      rt.warn('ds-bot: group chat Session %s stays where it was; it could not move to %s: %s', sessionId, cwd, error)
+    }
+  }
+
+  // The file tree reads this Session's cwd. The relay does not write there: its step
+  // is a synthesized group_relay, and a long line is stored under the team data.
+  // Members keep their own Sessions and move on to the folder at their next turn.
+  async function pointRoom(room) {
+    const dir = room.workDir
+    const usable = dir !== undefined && await rt.isFolder(dir)
+    if (room.workDir !== dir) return
+    const cwd = usable ? dir : await rt.keepTeamFolder()
+    if (room.workDir !== dir || cwd === undefined) return
+    await pointSession(room.id, cwd, () => room.workDir === dir)
+  }
+
+  // Once per process, after the team is loaded: a restart reads the stored header.
+  let roomsPointed = null
+  function pointSavedRooms() {
+    roomsPointed ??= (async () => {
+      for (const room of Object.values(state.rooms)) {
+        if (room.workDir !== undefined) await pointRoom(room)
+      }
+    })().catch(error => {
+      roomsPointed = null
+      rt.warn('ds-bot: group chats could not be pointed at their folders: %s', error)
+    })
+    return roomsPointed
+  }
+
   async function buildRoom({ members, custom, notice, mode, adminId, createdBy }) {
     const title = custom || autoRoomName(members)
-    // The group's own Session only relays, so it stays in the team workspace; the
-    // group's folder is for its members' Sessions.
+    // A new group has no folder yet, so its own Session starts in the team workspace.
+    // pointRoom moves that same Session when a folder is set.
     const id = await createSession(title)
     try {
       // A member deleted while the Session was made stays out, and the group is checked
@@ -492,19 +542,10 @@ export function install(rt) {
     // A Bot's own permissions are the user's to set, so a group's are too.
     if (patch.permission !== undefined && actorId !== undefined) throw new Error(`Only the user can set the permissions of "${room.name}"`)
     const permission = patch.permission === undefined ? undefined : rt.cleanRoomPermission(patch.permission)
-    // The relay limit is the user's guard against a group that never stops; it is
-    // not a member's to move, whatever its role.
-    if (patch.relayLimit !== undefined && actorId !== undefined) throw new Error(`Only the user can set the relay limit of "${room.name}"`)
-    let relayLimit
-    if (patch.relayLimit === null) relayLimit = null
-    else if (patch.relayLimit !== undefined) {
-      if (!Number.isInteger(patch.relayLimit) || patch.relayLimit < 1 || patch.relayLimit > 200) throw new Error('Relay limit must be a whole number from 1 to 200')
-      relayLimit = patch.relayLimit
-    }
     // The second run is the last check before the change is written, so no other change
     // can take the name in between.
     const name = patch.name === undefined ? undefined : cleanRoomName(patch.name, room.id)
-    return { members, admin, name, notice, permission, relayLimit }
+    return { members, admin, name, notice, permission }
   }
 
   // `actorId` is the Bot asking, or undefined for the user. Returns what changed, in words.
@@ -519,7 +560,7 @@ export function install(rt) {
     // No await from here until every change is written.
     const room = rt.roomOf(id)
     if (room === undefined) throw new Error('Unknown group chat')
-    const { members, admin, name, notice, permission, relayLimit } = planRoomChange(room, patch, actorId)
+    const { members, admin, name, notice, permission } = planRoomChange(room, patch, actorId)
 
     const changes = []
     const names = ids => ids.map(member => rt.botOf(member)?.name).filter(Boolean).join(', ')
@@ -540,11 +581,6 @@ export function install(rt) {
       room.mode = patch.mode
       changes.push(patch.mode === 'admin' ? 'plain messages now go to the admin first' : 'every member now replies in turn')
     }
-    if (relayLimit !== undefined && relayLimit !== (room.relayLimit ?? null)) {
-      if (relayLimit === null) delete room.relayLimit
-      else room.relayLimit = relayLimit
-      changes.push(relayLimit === null ? 'Bots pause at the default relay count again' : `Bots now pause after ${relayLimit} relays`)
-    }
     if (notice !== undefined && notice !== (room.notice ?? '')) {
       room.notice = notice
       changes.push(notice ? 'updated the notice' : 'cleared the notice')
@@ -553,6 +589,9 @@ export function install(rt) {
     if (moving && workDir !== room.workDir) {
       if (workDir === undefined) delete room.workDir
       else room.workDir = workDir
+      // A member's own pick for this group gives way to the group's folder, and a
+      // cleared one does not bring it back.
+      delete room.memberDirs
       changes.push(workDir ? `every member now works in ${workDir} here` : 'every member works in its own folder again')
     }
     const before = room.name
@@ -574,6 +613,8 @@ export function install(rt) {
       await retitleRoom(room)
     }
     await rt.save()
+    // After the folder is saved. A failure here leaves the setting in place.
+    if (moving) await pointRoom(room)
     return { room, changes }
   }
 
@@ -698,6 +739,8 @@ export function install(rt) {
   async function bootstrap() {
     await rt.load()
     void rt.syncModels()
+    // Opening the group Sessions must not hold up the team view.
+    void pointSavedRooms()
     if (state.mainBotIds.some(id => rt.botOf(id))) return
     // Only the team's first Main Bot is stored as the DeepSeek whale; other Bots get a
     // look from their id, and a Bot made Main Bot later keeps its own.
