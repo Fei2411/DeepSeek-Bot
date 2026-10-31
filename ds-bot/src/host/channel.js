@@ -97,6 +97,16 @@ export function install(rt) {
     connectors: rt.connectorsView(),
     capabilityStatuses: rt.capabilityStatusesView(),
   })
+  // The live fields' sources are spread across the host with no single change
+  // counter, so the serialized answer itself is the detector: a poll whose `live`
+  // still names it gets only the key back, not the fields again.
+  let liveCache = null
+  const liveAnswer = () => {
+    const value = live()
+    const json = JSON.stringify(value)
+    if (liveCache?.json === json) return liveCache
+    return liveCache = { key: (liveCache?.key ?? 0) + 1, value, json }
+  }
   // What a host that only reads the team may still answer.
   // Updates change the dsh profile, not the team, so a reading host may run them too.
   const READS = new Set(['state', 'models', 'efforts', 'providers', 'provider-models', 'earlier', 'chat', 'run-stats', 'room-progress', 'exchange', 'exchange-text', 'file-text', 'usage', 'schedules', 'memory-view', 'browser-wait', 'browser-result', 'diagnostics', 'diagnostics-log', 'diagnostics-clear', 'update-check', 'update-install', 'dsh-update-install', 'repo-stars', 'approval-answer', 'thinking', 'avatar-library'])
@@ -147,13 +157,18 @@ export function install(rt) {
       const readOnly = rt.readOnly()
       if (readOnly !== undefined && !READS.has(endpoint)) return fail(readOnly, 'bot/read-only')
       switch (endpoint) {
-        case 'state':
+        case 'state': {
           if (typeof body.locale === 'string' && /^[a-z]{2,3}(-[\w-]+)?$/i.test(body.locale)) uiLocale = body.locale
           if (readOnly === undefined) await rt.bootstrap()
           await rt.catalog()
           await rt.loadSecrets()
-          if (body.since === state.revision && (body.models === undefined || body.models === modelsKey())) return ok({ revision: state.revision, unchanged: true, ...live() })
-          return ok({ ...view(), ...live() })
+          const answer = liveAnswer()
+          if (body.since === state.revision && (body.models === undefined || body.models === modelsKey())) {
+            if (body.live === answer.key) return ok({ revision: state.revision, unchanged: true, liveKey: answer.key })
+            return ok({ revision: state.revision, unchanged: true, liveKey: answer.key, ...answer.value })
+          }
+          return ok({ ...view(), liveKey: answer.key, ...answer.value })
+        }
         case 'models':
           await rt.catalog({ fresh: true })
           return ok({ modelsKey: modelsKey() })

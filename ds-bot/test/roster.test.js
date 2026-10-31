@@ -280,6 +280,40 @@ test('the state reports a changed model list without a new revision', async (t) 
   assert.equal((await call('state', { since: first.revision, models: 'stale' })).value.unchanged, undefined)
 })
 
+test('an unchanged state answer skips the live fields a window already holds', async (t) => {
+  const { call, stop, ctx } = start(undefined, { models: ['deepseek-v4-flash'] })
+  t.after(stop)
+  const first = (await call('state', {})).value
+  assert.equal(typeof first.liveKey, 'number')
+  // The window echoes the live key it holds; while it still names the answer,
+  // the live fields stay out.
+  const quiet = (await call('state', { since: first.revision, models: first.modelsKey, live: first.liveKey })).value
+  assert.equal(quiet.unchanged, true)
+  assert.equal(quiet.liveKey, first.liveKey)
+  assert.equal(quiet.activity, undefined)
+  assert.equal(quiet.work, undefined)
+  assert.equal(quiet.connectors, undefined)
+  // A key that names an older answer still gets the fields with the current one.
+  const stale = (await call('state', { since: first.revision, models: first.modelsKey, live: first.liveKey - 1 })).value
+  assert.equal(stale.unchanged, true)
+  assert.equal(stale.liveKey, first.liveKey)
+  assert.equal(typeof stale.activity, 'object')
+  assert.equal(typeof stale.work, 'object')
+  // Live state that changes without a new revision moves the key.
+  const chief = first.bots.find(bot => bot.id === first.mainBotId)
+  for (const listener of ctx.listeners.get('session/event') ?? []) {
+    listener({ id: chief.sessionId ?? chief.id }, { type: 'turn/start', data: { turn: 1 }, time: Date.now() })
+  }
+  const working = (await call('state', { since: first.revision, models: first.modelsKey, live: first.liveKey })).value
+  assert.equal(working.unchanged, true)
+  assert.notEqual(working.liveKey, first.liveKey)
+  assert.equal(Object.keys(working.work?.bots ?? {}).length, 1)
+  // And once it holds that answer, the next poll is small again.
+  const again = (await call('state', { since: first.revision, models: first.modelsKey, live: working.liveKey })).value
+  assert.equal(again.unchanged, true)
+  assert.equal(again.activity, undefined)
+})
+
 test('a new team starts with a DeepSeek-blue whale as its Main Bot', async (t) => {
   const { call, stop } = start()
   t.after(stop)

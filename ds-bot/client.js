@@ -20325,6 +20325,7 @@ function apply(ctx) {
   const activity = createSource({});
   const work = createSource({ bots: {}, approvals: [] });
   let workKey = "";
+  let liveKey;
   const live = createSource({});
   const cards = createSource({});
   const heldCards = createSource({});
@@ -20359,20 +20360,25 @@ function apply(ctx) {
   const pull = async () => {
     const order = ++pulls;
     const known = roster.getSnapshot();
-    const value = await call("state", { since: known.revision, models: known.modelsKey ?? "", locale: language() });
+    const value = await call("state", { since: known.revision, models: known.modelsKey ?? "", live: liveKey, locale: language() });
     if (order < applied) return;
     applied = order;
-    const nextActivity = JSON.stringify(value.activity ?? {});
-    if (nextActivity !== activityKey) {
-      activityKey = nextActivity;
-      activity.set(value.activity ?? {});
+    if (value.liveKey !== void 0) liveKey = value.liveKey;
+    if (value.activity !== void 0) {
+      const nextActivity = JSON.stringify(value.activity);
+      if (nextActivity !== activityKey) {
+        activityKey = nextActivity;
+        activity.set(value.activity);
+      }
     }
-    const nextWork = JSON.stringify(value.work ?? null);
-    if (nextWork !== workKey) {
-      workKey = nextWork;
-      work.set(value.work ?? { bots: {}, approvals: [] });
+    if (value.work !== void 0) {
+      const nextWork = JSON.stringify(value.work);
+      if (nextWork !== workKey) {
+        workKey = nextWork;
+        work.set(value.work);
+      }
     }
-    noteMemoryNews(value.memoryNews ?? {});
+    if (value.memoryNews !== void 0) noteMemoryNews(value.memoryNews);
     const current = roster.getSnapshot();
     const live2 = {};
     if (value.connectors !== void 0 && JSON.stringify(value.connectors) !== JSON.stringify(current.connectors ?? [])) live2.connectors = value.connectors;
