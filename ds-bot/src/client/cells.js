@@ -54,7 +54,7 @@ export function Bubbles({ texts, roster, selfId, actions, streaming, sessionId, 
 }
 
 function Bubble({ text, index, roster, selfId, actions, sessionId, msgKey, mentions, fold, picked, live, lead, whole }) {
-  const { shown, folded, control } = useFold(text, { limit: fold, whole, live })
+  const { shown, folded, control, code } = useFold(text, { limit: fold, whole, live })
   const key = msgKey ? `${msgKey}:${index}` : undefined
   const body = h(MarkdownText, { text: linkMentions(shown, roster.bots, selfId), streaming: live, labels: mdLabels(), variant: 'compact', fileMentions: mentions })
   const row = useRef(null)
@@ -66,7 +66,28 @@ function Bubble({ text, index, roster, selfId, actions, sessionId, msgKey, menti
     if (!noHover() || event.target instanceof Element && event.target.closest('a,button,input,textarea,select,pre,code,[role=button],[role=link]')) return
     setToolsOpen(value => !value)
   }
-  return h('div', { ref: row, className: 'bt-msg', onClick: tapTools },
+  // The copy button inside a folded message's last code block would copy only
+  // the part the preview kept; write the whole block instead. On capture, so
+  // the Markdown's own copy handler never sees the click.
+  const copyFolded = (event) => {
+    if (code === undefined || !(event.target instanceof Element)) return
+    const button = event.target.closest('button')
+    // The code block's copy control is the copyButton in its banner; its label
+    // varies by the DSH version, so match the class, with the label as a spare.
+    const label = button?.getAttribute('aria-label')
+    if (!button || (!/copyButton/i.test(button.className ?? '') && label !== t('Copy') && label !== t('Copied'))) return
+    // The copy control may sit inside the `pre` or in the chrome wrapping it:
+    // the nearest ancestor of the button that holds a `pre` is its block, and
+    // only the last block in a folded preview is the cut one.
+    let holder = button.parentElement
+    while (holder !== null && holder !== row.current && holder.querySelector('pre') === null) holder = holder.parentElement
+    const pres = row.current?.querySelectorAll('pre') ?? []
+    if (holder?.querySelector('pre') !== pres[pres.length - 1] || pres.length === 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    void navigator.clipboard?.writeText(code)
+  }
+  return h('div', { ref: row, className: 'bt-msg', onClick: tapTools, onClickCapture: copyFolded },
     h('div', { className: 'bt-msg-line' },
       lead,
       h('div', { className: 'bt-bubble', 'data-folded': folded || undefined },
@@ -408,9 +429,23 @@ const scrollParent = (node) => {
 }
 
 function EarlierUser({ row }) {
-  const { shown, folded, control } = useFold(row.text ?? '')
+  const { shown, folded, control, code } = useFold(row.text ?? '')
   const body = row.text ? h(MarkdownText, { text: shown, labels: mdLabels(), variant: 'compact' }) : null
-  return h('div', { className: 'bt-urow' }, h('div', { className: 'bt-ububble', 'data-folded': folded || undefined },
+  const box = useRef(null)
+  const copyFolded = (event) => {
+    if (code === undefined || !(event.target instanceof Element)) return
+    const button = event.target.closest('button')
+    const label = button?.getAttribute('aria-label')
+    if (!button || (!/copyButton/i.test(button.className ?? '') && label !== t('Copy') && label !== t('Copied'))) return
+    let holder = button.parentElement
+    while (holder !== null && holder !== box.current && holder.querySelector('pre') === null) holder = holder.parentElement
+    const pres = box.current?.querySelectorAll('pre') ?? []
+    if (holder?.querySelector('pre') !== pres[pres.length - 1] || pres.length === 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    void navigator.clipboard?.writeText(code)
+  }
+  return h('div', { className: 'bt-urow', ref: box, onClickCapture: copyFolded }, h('div', { className: 'bt-ububble', 'data-folded': folded || undefined },
     control ? h('div', { className: 'bt-fold-body' }, body) : body,
     control,
     row.images ? h('span', { className: 'bt-uimages' }, row.images === 1 ? t('1 image') : t('{count} images', { count: row.images })) : null))

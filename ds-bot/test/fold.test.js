@@ -35,7 +35,7 @@ runInNewContext(bundle.outputFiles[0].text, {
     return react
   },
 })
-const { FOLD_AT, FOLD_HUGE, foldPreview, stripLongNote, useFold } = module.exports
+const { FOLD_AT, FOLD_HUGE, foldPreview, foldView, stripLongNote, useFold } = module.exports
 const render = (text, options) => { at = 0; return useFold(text, options) }
 const fresh = () => { slots = [] }
 const buttons = node => (node === null || typeof node !== 'object' ? [] : [...(node.type === 'button' ? [node] : []), ...node.children.flatMap(buttons)])
@@ -144,6 +144,25 @@ test('a message kept only in part is read whole on request, and says when it is 
   await buttons(render(short, { whole: lost }).control)[0].props.onClick()
   assert.equal(render(short, { whole: lost }).shown, short)
   assert.match(words(render(short, { whole: lost }).control), /^Only the start of this message is kept here/)
+})
+
+// #718: the copy of a code block the preview cut must reach the whole block.
+test('a folded preview also yields the whole code block it cut', () => {
+  const inner = lines(30)
+  const view = foldView(`Here:\n\`\`\`js\n${inner}\n\`\`\`\nafter`)
+  assert.equal(view.head, `Here:\n\`\`\`\n${lines(8)}\n\`\`\``)
+  assert.equal(view.code, inner)
+  // A block that never closes yields to the end of the text.
+  assert.equal(foldView(`\`\`\`js\n${inner}`).code, inner)
+  // No fence is cut: nothing extra to copy.
+  assert.equal(foldView(lines(30)).code, undefined)
+  const closed = foldView(`\`\`\`\na\n\`\`\`\n${lines(30)}`)
+  assert.equal(closed.code, undefined)
+  // The folded state hands the code to the caller; a cut message cannot.
+  fresh()
+  assert.equal(render(`Here:\n\`\`\`js\n${inner}\n\`\`\``, {}).code, inner)
+  fresh()
+  assert.equal(render('short', { whole: { length: 300_000 } }).code, undefined)
 })
 
 test('a streaming text never folds', () => {

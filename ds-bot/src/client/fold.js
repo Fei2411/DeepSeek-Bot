@@ -30,7 +30,36 @@ function moreLines(text, max) {
 // The start of a long text, cut at a line end (or inside a very long first line). In
 // Markdown a code fence left open is closed, so the preview does not run on as code.
 // Null when `text` is within `limit`.
-export function foldPreview(text, limit = FOLD_AT, markdown = true) {
+// The fence a preview cut left open: the marker and its line index in `lines`.
+function openedFence(lines) {
+  let open = null
+  let openLine = -1
+  for (let i = 0; i < lines.length; i += 1) {
+    const marker = FENCE.exec(lines[i])?.[1]
+    if (marker === undefined) continue
+    if (open === null) { open = marker; openLine = i }
+    else if (marker[0] === open[0] && marker.length >= open.length) open = null
+  }
+  return open === null ? null : { marker: open, line: openLine }
+}
+
+// The block a preview's cut fence opens, read whole from the unfolded text: the
+// lines between the fence and its close (or the end when it never closes), so a
+// copy of the partly shown block does not stop at the fold.
+function blockCode(body, fenceLine, open) {
+  const lines = body.split('\n')
+  const code = []
+  for (let i = fenceLine + 1; i < lines.length; i += 1) {
+    const marker = FENCE.exec(lines[i])?.[1]
+    if (marker !== undefined && marker[0] === open[0] && marker.length >= open.length) break
+    code.push(lines[i])
+  }
+  return code.join('\n')
+}
+
+// The preview `head` plus `code`, the whole block its cut fence opens (null when
+// the cut does not sit inside a fence).
+export function foldView(text, limit = FOLD_AT, markdown = true) {
   if (text.length <= limit.chars && !moreLines(text, limit.lines)) return null
   // Blank lines first: the preview starts at the first visible character. An
   // all-blank message has nothing to preview, so it does not fold at all.
@@ -42,37 +71,26 @@ export function foldPreview(text, limit = FOLD_AT, markdown = true) {
     head = cutAt(head, cut > 0 ? cut : PREVIEW_CHARS)
   }
   if (head.trim() === '') head = cutAt(body, PREVIEW_CHARS)
-  if (!markdown) return head
-  let open = null
-  let openLine = -1
-  let lines = head.split('\n')
-  for (let i = 0; i < lines.length; i += 1) {
-    const marker = FENCE.exec(lines[i])?.[1]
-    if (marker === undefined) continue
-    if (open === null) { open = marker; openLine = i }
-    else if (marker[0] === open[0] && marker.length >= open.length) open = null
-  }
-  if (open !== null && lines.slice(openLine + 1).join('').trim() === '') {
+  if (!markdown) return { head }
+  let opened = openedFence(head.split('\n'))
+  if (opened !== null && head.split('\n').slice(opened.line + 1).join('').trim() === '') {
     // The cut kept only the fence marker (a card opening like ```dsh-ui on
     // its own line): an empty fence renders nothing, so pull the start of
     // the fenced text in as the preview instead.
     head = cutAt(body, PREVIEW_CHARS)
-    lines = head.split('\n')
-    open = null
-    openLine = -1
-    for (let i = 0; i < lines.length; i += 1) {
-      const marker = FENCE.exec(lines[i])?.[1]
-      if (marker === undefined) continue
-      if (open === null) { open = marker; openLine = i }
-      else if (marker[0] === open[0] && marker.length >= open.length) open = null
-    }
+    opened = openedFence(head.split('\n'))
   }
-  if (open === null) return head
+  if (opened === null) return { head }
   // A fence the preview cut open loses its language tag: a downstream
   // renderer (dsh-ui cards) would otherwise claim the half message and the
   // expansion remounts its subtree looking like a no-op.
-  lines[openLine] = open
-  return `${lines.join('\n')}\n${open}`
+  const lines = head.split('\n')
+  lines[opened.line] = opened.marker
+  return { head: `${lines.join('\n')}\n${opened.marker}`, code: blockCode(body, opened.line, opened.marker) }
+}
+
+export function foldPreview(text, limit = FOLD_AT, markdown = true) {
+  return foldView(text, limit, markdown)?.head ?? null
 }
 
 // The line a long message that went as a file starts with (the host's attachLong) is
@@ -88,8 +106,12 @@ export function useFold(text, { limit = FOLD_AT, whole, live = false, markdown =
   const [read, setRead] = useState()
   const cut = whole !== undefined && whole.length > text.length
   // A message kept only in part folds whatever the length of its start.
-  const preview = useMemo(() => (live ? null : foldPreview(text, cut ? ALWAYS : limit, markdown)), [text, live, limit, markdown, cut])
-  if (preview === null) return { shown: text, control: null }
+  const view = useMemo(() => (live ? null : foldView(text, cut ? ALWAYS : limit, markdown)), [text, live, limit, markdown, cut])
+  if (view === null) return { shown: text, control: null }
+  // `code` is the whole block the preview's last code fence opens, for a copy
+  // that must not stop at the fold; only the full text can supply it, so a
+  // message kept only in part has none.
+  const code = cut ? undefined : view.code
   const count = (cut ? whole.length : text.length).toLocaleString()
   if (!open) {
     const show = async () => {
@@ -98,7 +120,7 @@ export function useFold(text, { limit = FOLD_AT, whole, live = false, markdown =
       setRead('loading')
       setRead(await whole.load() ?? { whole: false })
     }
-    return { shown: preview, folded: true, control: h('span', { className: 'bt-fold' }, h('button', { type: 'button', className: 'bt-more', onClick: show }, t('Show all · {count} characters', { count }))) }
+    return { shown: view.head, folded: true, code, control: h('span', { className: 'bt-fold' }, h('button', { type: 'button', className: 'bt-more', onClick: show }, t('Show all · {count} characters', { count }))) }
   }
   const loaded = typeof read?.text === 'string' ? read : undefined
   const note = !cut || read === undefined || read === 'loading' || loaded?.whole ? null
