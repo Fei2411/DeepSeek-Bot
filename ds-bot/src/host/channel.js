@@ -10,6 +10,8 @@ import { COLORS, EXTRA_COLORS, ROUTE } from './constants.js'
 
 const LANGUAGES = { zh: 'Chinese (简体中文)', en: 'English' }
 const RUN_STATS = ['sessionStats', 'tokenUsage', 'contextPressure']
+// The media types the prompt admission takes as images; every other upload goes as a file.
+const IMAGE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 
 const invalid = message => Object.assign(new Error(message), { code: 'bot/invalid' })
 // Programming and file system errors are DS Bot's own faults, logged with their stack;
@@ -426,17 +428,38 @@ export function install(rt) {
         }
         case 'send': {
           const text = String(body.text ?? '').trim()
-          if (text === '' || typeof body.sessionId !== 'string') return fail('Nothing to send', 'bot/invalid')
+          // Base64 uploads from a window's own file input (the app composer's "+"; the
+          // plugin composes them through the shell's draft rail instead).
+          const uploads = Array.isArray(body.attachments) ? body.attachments.slice(0, 16) : []
+          if ((text === '' && uploads.length === 0) || typeof body.sessionId !== 'string') return fail('Nothing to send', 'bot/invalid')
           await rt.load()
           // A Bot id or an earlier part of its own chat means the current part.
           const past = rt.pastOwners.get(body.sessionId)
           const sessionId = rt.botOf(body.sessionId) ? rt.chatOf(body.sessionId) : past && past.roomId === undefined ? rt.chatOf(past.botId) : body.sessionId
           await rt.ensureCapabilities(sessionId)
+          const content = []
+          if (text !== '') content.push({ type: 'text', text })
+          for (const upload of uploads) {
+            const name = String(upload?.name ?? '').slice(0, 260) || 'attachment'
+            const data = String(upload?.data ?? '')
+            if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return fail('Bad attachment data', 'bot/invalid')
+            const mediaType = String(upload?.mediaType ?? '')
+            if (IMAGE_MEDIA_TYPES.has(mediaType)) {
+              content.push({ type: 'image', mediaType, data, name })
+              continue
+            }
+            const fileUploads = ctx.get?.('fileUploads')
+            if (fileUploads === undefined) return fail('Files cannot be attached here', 'bot/unavailable')
+            const bytes = Buffer.from(data, 'base64')
+            async function* once() { yield new Uint8Array(bytes) }
+            const { receiptId } = await fileUploads.uploadStream({ sessionId, data: once(), name })
+            content.push({ type: 'file', receiptId })
+          }
           await ctx.sessionController.prompt({
             requestId: randomUUID(),
             sessionId,
             mode: 'queue',
-            content: [{ type: 'text', text }],
+            content,
           }, AbortSignal.timeout(30_000))
           return ok(true)
         }

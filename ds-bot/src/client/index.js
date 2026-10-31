@@ -819,6 +819,18 @@ export function apply(ctx) {
     return () => fiber.dispose()
   }
   actions.canReferenceChat = () => atMenu !== null
+  // Where the composer's "+" picked files through its own input (the shell's input is
+  // preferred when the composer has one), they land in the shell's draft rail.
+  actions.attachFiles = (sessionId, files, inputActions) => {
+    const conversation = ctx.conversation
+    if (conversation === undefined || typeof inputActions?.addAttachments !== 'function') return false
+    const drafts = conversation.createDrafts(sessionId, files)
+    if (!inputActions.addAttachments(drafts.map(draft => draft.id))) {
+      conversation.releaseDraftAttachments(drafts)
+      return false
+    }
+    return true
+  }
   actions.referenceChat = (sessionId, span) => {
     const controller = atMenu?.controllerOf(sessionId)
     if (controller === undefined || span === undefined) return

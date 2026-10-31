@@ -178,6 +178,8 @@ export function createTeam() {
     providerModels: body => call('provider-models', body),
     removeProvider: provider => after(call('provider-remove', { provider })),
     openModels: () => actions.openSettings('models'),
+    // Files picked through the "+" menu's own input wait in the composer as attachments.
+    attachFiles: (sessionId, files, inputActions) => inputActions?.addFiles?.(files),
     // Nothing else draws in the window: no shell panels, right sidebar, "@" menu or voice plugin.
     hasRightSidebar: () => false,
     canReferenceChat: () => false,

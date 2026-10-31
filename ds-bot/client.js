@@ -1690,7 +1690,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     setMain: (id, main = true, options = {}) => after(call2("set-main", { id, main, ...options })),
     updateRoom: (id, patch) => after(call2("update-room", { id, ...patch })),
     continueRoom: (roomId) => after(call2("room-continue", { roomId })),
-    send: (sessionId, text) => after(call2("send", { sessionId: partFor(sessionId), text })),
+    send: (sessionId, text, attachments) => after(call2("send", { sessionId: partFor(sessionId), text, ...attachments?.length ? { attachments } : {} })),
     answerQuestion: (sessionId, questionId, answer) => after(call2("answer-question", { sessionId: partFor(sessionId), questionId, answer })),
     dismissQuestion: (sessionId) => after(call2("dismiss-question", { sessionId })),
     answerView: (sessionId, viewId, action, values) => after(call2("view-reply", { sessionId: partFor(sessionId), viewId, action, values })),
@@ -10535,6 +10535,7 @@ function ComposerPlus({ sessionId, inputActions, useRoster, actions }) {
   const [shown, leaving] = useLinger(open, 120);
   const button = (0, import_react20.useRef)(null);
   const menu = (0, import_react20.useRef)(null);
+  const ownInput = (0, import_react20.useRef)(null);
   const tick = useViewport();
   (0, import_react20.useEffect)(() => {
     if (!open) return void 0;
@@ -10556,17 +10557,16 @@ function ComposerPlus({ sessionId, inputActions, useRoster, actions }) {
   }, [open]);
   const target = roster.byId?.[sessionId]?.id ?? roster.roomsById?.[sessionId]?.id;
   if (sessionId === void 0 || target === void 0) return null;
-  const fileInput = () => button.current?.closest("[data-composer-card]")?.querySelector("input[type=file]");
-  const toggle = () => {
-    if (open) {
-      setOpen(null);
-      return;
-    }
-    setOpen({ files: Boolean(fileInput()) });
-  };
+  const fileInput = () => button.current?.closest("[data-composer-card]")?.querySelector("input[type=file]:not([data-bot-files]):not(:disabled)") ?? ownInput.current;
+  const toggle = () => setOpen(open ? null : {});
   const attach = () => {
     setOpen(null);
     fileInput()?.click();
+  };
+  const onPick = (event) => {
+    const picked = event.target.files === null ? [] : [...event.target.files];
+    event.target.value = "";
+    if (picked.length > 0) void actions.attachFiles?.(sessionId, picked, inputActions);
   };
   const schedule = () => {
     setOpen(null);
@@ -10585,6 +10585,7 @@ function ComposerPlus({ sessionId, inputActions, useRoster, actions }) {
   return (0, import_react20.createElement)(
     import_react20.Fragment,
     null,
+    (0, import_react20.createElement)("input", { ref: ownInput, "data-bot-files": "", type: "file", multiple: true, hidden: true, onChange: onPick }),
     (0, import_react20.createElement)("button", {
       ref: button,
       type: "button",
@@ -10606,7 +10607,7 @@ function ComposerPlus({ sessionId, inputActions, useRoster, actions }) {
         style: place ?? {},
         "data-leaving": leaving || void 0
       },
-      shown.files ? (0, import_react20.createElement)("button", { type: "button", role: "menuitem", onClick: attach }, (0, import_react20.createElement)(PaperclipIcon), (0, import_react20.createElement)("span", { className: "bt-menu-label" }, t("Add files"))) : null,
+      (0, import_react20.createElement)("button", { type: "button", role: "menuitem", onClick: attach }, (0, import_react20.createElement)(PaperclipIcon), (0, import_react20.createElement)("span", { className: "bt-menu-label" }, t("Add files"))),
       canReference ? (0, import_react20.createElement)("button", { type: "button", role: "menuitem", onMouseDown: keepComposerFocus, onClick: reference }, (0, import_react20.createElement)(ChatsIcon), (0, import_react20.createElement)("span", { className: "bt-menu-label" }, t("Reference a chat"))) : null,
       (0, import_react20.createElement)("button", { type: "button", role: "menuitem", onClick: schedule }, (0, import_react20.createElement)(ClockIcon), (0, import_react20.createElement)("span", { className: "bt-menu-label" }, t("Scheduled task")))
     ), document.body) : null
@@ -21035,6 +21036,16 @@ function apply(ctx) {
     return () => fiber.dispose();
   };
   actions.canReferenceChat = () => atMenu !== null;
+  actions.attachFiles = (sessionId, files, inputActions) => {
+    const conversation = ctx.conversation;
+    if (conversation === void 0 || typeof inputActions?.addAttachments !== "function") return false;
+    const drafts = conversation.createDrafts(sessionId, files);
+    if (!inputActions.addAttachments(drafts.map((draft) => draft.id))) {
+      conversation.releaseDraftAttachments(drafts);
+      return false;
+    }
+    return true;
+  };
   actions.referenceChat = (sessionId, span) => {
     const controller = atMenu?.controllerOf(sessionId);
     if (controller === void 0 || span === void 0) return;

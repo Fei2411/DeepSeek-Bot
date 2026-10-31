@@ -112,6 +112,7 @@ export function ComposerPlus({ sessionId, inputActions, useRoster, actions }) {
   const [shown, leaving] = useLinger(open, 120)
   const button = useRef(null)
   const menu = useRef(null)
+  const ownInput = useRef(null)
   const tick = useViewport()
   useEffect(() => {
     if (!open) return undefined
@@ -123,15 +124,18 @@ export function ComposerPlus({ sessionId, inputActions, useRoster, actions }) {
   }, [open])
   const target = roster.byId?.[sessionId]?.id ?? roster.roomsById?.[sessionId]?.id
   if (sessionId === undefined || target === undefined) return null
-  const fileInput = () => button.current?.closest('[data-composer-card]')?.querySelector('input[type=file]')
-  const toggle = () => {
-    if (open) { setOpen(null); return }
-    // Files go through the composer's own file input; a composer without one takes none.
-    setOpen({ files: Boolean(fileInput()) })
-  }
+  // The shell's own file input wins where the composer has one (its intake checks apply);
+  // elsewhere — the app's own composer — the "+" keeps its own input.
+  const fileInput = () => button.current?.closest('[data-composer-card]')?.querySelector('input[type=file]:not([data-bot-files]):not(:disabled)') ?? ownInput.current
+  const toggle = () => setOpen(open ? null : {})
   const attach = () => {
     setOpen(null)
     fileInput()?.click()
+  }
+  const onPick = (event) => {
+    const picked = event.target.files === null ? [] : [...event.target.files]
+    event.target.value = ''
+    if (picked.length > 0) void actions.attachFiles?.(sessionId, picked, inputActions)
   }
   const schedule = () => {
     setOpen(null)
@@ -152,6 +156,7 @@ export function ComposerPlus({ sessionId, inputActions, useRoster, actions }) {
     return { left: rect.left, bottom: viewBottom() - rect.top + 8 }
   }, [shown, open, tick])
   return h(Fragment, null,
+    h('input', { ref: ownInput, 'data-bot-files': '', type: 'file', multiple: true, hidden: true, onChange: onPick }),
     h('button', {
       ref: button, type: 'button', className: 'bt-plus', 'aria-label': t('Add'), title: t('Add'),
       'aria-haspopup': 'menu', 'aria-expanded': Boolean(open), onMouseDown: keepComposerFocus, onClick: toggle,
@@ -160,7 +165,7 @@ export function ComposerPlus({ sessionId, inputActions, useRoster, actions }) {
       ref: menu, className: 'bt-menu bt-menu-up bt-plus-menu', role: 'menu', 'aria-label': t('Add'),
       style: place ?? {}, 'data-leaving': leaving || undefined,
     },
-    shown.files ? h('button', { type: 'button', role: 'menuitem', onClick: attach }, h(PaperclipIcon), h('span', { className: 'bt-menu-label' }, t('Add files'))) : null,
+    h('button', { type: 'button', role: 'menuitem', onClick: attach }, h(PaperclipIcon), h('span', { className: 'bt-menu-label' }, t('Add files'))),
     canReference ? h('button', { type: 'button', role: 'menuitem', onMouseDown: keepComposerFocus, onClick: reference }, h(ChatsIcon), h('span', { className: 'bt-menu-label' }, t('Reference a chat'))) : null,
     h('button', { type: 'button', role: 'menuitem', onClick: schedule }, h(ClockIcon), h('span', { className: 'bt-menu-label' }, t('Scheduled task')))), document.body) : null)
 }

@@ -72,6 +72,11 @@ html[data-mac] .dsb-frame .dsb-side{padding-top:var(--dsb-band)}
 [data-composer-card]:has(.dsb-send:disabled) .bt-voice{display:inline-grid}
 body[data-bt-room] [data-composer-card]:has(.dsb-send:disabled) .bt-mic:not([aria-pressed=true]){background:var(--bt-accent);color:var(--bt-accent-ink,#fff)}
 .dsb-composer-error{margin:0 0 6px 4px;font-size:12px;line-height:16px;color:var(--bt-danger)}
+.dsb-files{flex:0 0 100%;order:0;display:flex;flex-wrap:wrap;gap:6px;padding:2px 8px 6px}
+.dsb-file{display:inline-flex;align-items:center;gap:6px;max-width:220px;padding:3px 6px 3px 10px;border-radius:8px;background:var(--bt-hover);font-size:12px;line-height:16px;color:var(--bt-ink)}
+.dsb-file-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsb-file button{flex:none;width:16px;height:16px;border:0;border-radius:50%;padding:0;background:none;color:var(--bt-ink-2);cursor:pointer;display:inline-grid;place-items:center}
+.dsb-file button:hover{background:var(--bt-active);color:var(--bt-ink)}
 
 /* Markdown in the bubbles (primitives.js). */
 .md_markdown{overflow-wrap:anywhere}

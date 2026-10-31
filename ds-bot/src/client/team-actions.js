@@ -105,7 +105,7 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     setMain: (id, main = true, options = {}) => after(call('set-main', { id, main, ...options })),
     updateRoom: (id, patch) => after(call('update-room', { id, ...patch })),
     continueRoom: roomId => after(call('room-continue', { roomId })),
-    send: (sessionId, text) => after(call('send', { sessionId: partFor(sessionId), text })),
+    send: (sessionId, text, attachments) => after(call('send', { sessionId: partFor(sessionId), text, ...(attachments?.length ? { attachments } : {}) })),
     answerQuestion: (sessionId, questionId, answer) => after(call('answer-question', { sessionId: partFor(sessionId), questionId, answer })),
     dismissQuestion: sessionId => after(call('dismiss-question', { sessionId })),
     answerView: (sessionId, viewId, action, values) => after(call('view-reply', { sessionId: partFor(sessionId), viewId, action, values })),

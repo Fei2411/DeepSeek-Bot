@@ -72,12 +72,12 @@ function useChat(botId, part, feed) {
   }), [feed, botId, load])
 
   // Shown at once: the message can come back on the feed before the request returns.
-  const send = async (text, actions, sessionId) => {
+  const send = async (text, actions, sessionId, attachments) => {
     const entry = { kind: 'user', text, time: Date.now() }
     setPending(list => [...list, entry])
     actions.noteSent(sessionId)
     try {
-      await actions.send(sessionId, text)
+      await actions.send(sessionId, text, attachments)
     } catch (error) {
       setPending(list => list.filter(item => item !== entry))
       throw error
@@ -87,22 +87,34 @@ function useChat(botId, part, feed) {
 }
 
 // What the Bot views' voice button asks of a composer (DSH's composer in the plugin):
-// where the caret is, and text put in there.
-function useInput(field, setText) {
+// where the caret is, and text put in there. `addFiles` takes the "+" menu's picked
+// files into the attachments waiting on the draft.
+function useInput(field, setText, addFiles) {
   return useMemo(() => ({
     captureInsertion: () => (field.current ? { start: field.current.selectionStart, end: field.current.selectionEnd } : null),
     insertText: (value, at) => setText((current) => {
       const start = Math.min(at?.start ?? current.length, current.length)
       return current.slice(0, start) + value + current.slice(Math.max(start, at?.end ?? start))
     }),
-  }), [field, setText])
+    addFiles,
+  }), [field, setText, addFiles])
+}
+
+// The api channel takes base64 attachments: images ride the prompt as image parts,
+// every other file is staged first and named by its receipt.
+const encodeFile = async (file) => {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000))
+  return { name: file.name, mediaType: file.type || 'application/octet-stream', data: btoa(binary) }
 }
 
 function Composer({ sessionId, placeholder, disabled, onSend, actions, useUi, useRoster }) {
   const [text, setText] = useState('')
+  const [files, setFiles] = useState([])
   const [error, setError] = useState(null)
   const field = useRef(null)
-  const inputActions = useInput(field, setText)
+  const inputActions = useInput(field, setText, useCallback(picked => setFiles(list => [...list, ...picked]), []))
   useLayoutEffect(() => {
     const node = field.current
     node.style.height = 'auto'
@@ -111,19 +123,33 @@ function Composer({ sessionId, placeholder, disabled, onSend, actions, useUi, us
   useEffect(() => { if (!disabled) field.current?.focus() }, [sessionId, disabled])
   const submit = async () => {
     const value = text.trim()
-    if (value === '' || disabled) return
+    if ((value === '' && files.length === 0) || disabled) return
     setError(null)
-    setText('')
+    let uploads
     try {
-      await onSend(value)
+      uploads = await Promise.all(files.map(encodeFile))
+    } catch {
+      setError(t('The file could not be read'))
+      return
+    }
+    const sent = files
+    setText('')
+    setFiles([])
+    try {
+      await onSend(value, uploads)
     } catch (failure) {
       setText(current => (current === '' ? value : current))
+      setFiles(sent)
       setError(failure.message)
     }
   }
   return h('div', { className: 'dsb-composer-wrap' },
     error ? h('p', { className: 'dsb-composer-error', role: 'alert' }, error) : null,
-    h('div', { className: 'dsb-composer', 'data-composer-card': '', 'data-multiline': text.includes('\n') || undefined },
+    h('div', { className: 'dsb-composer', 'data-composer-card': '', 'data-multiline': text.includes('\n') || files.length > 0 || undefined },
+      files.length > 0 ? h('div', { className: 'dsb-files' },
+        files.map((file, index) => h('span', { className: 'dsb-file', key: `${file.name}-${index}` },
+          h('span', { className: 'dsb-file-name' }, file.name),
+          h('button', { type: 'button', 'aria-label': t('Remove'), title: t('Remove'), onClick: () => setFiles(list => list.filter((_, at) => at !== index)) }, '×'))))) : null,
       h('div', { className: 'dsb-composer-tools' }, h(ComposerPlus, { sessionId, inputActions, useRoster, actions })),
       h('div', { className: 'dsb-composer-input', 'data-input-scroll': '' },
         h('textarea', {
@@ -144,7 +170,7 @@ function Composer({ sessionId, placeholder, disabled, onSend, actions, useUi, us
         })),
       h('div', { className: 'dsb-composer-trailing' },
         h(ComposerVoice, { sessionId, inputActions, actions, useUi }),
-        h('button', { type: 'button', className: 'dsb-send', disabled: disabled || text.trim() === '', 'aria-label': t('Send message'), title: t('Send message'), onClick: () => { void submit() } }, h(ArrowUpIcon)))))
+        h('button', { type: 'button', className: 'dsb-send', disabled: disabled || (text.trim() === '' && files.length === 0), 'aria-label': t('Send message'), title: t('Send message'), onClick: () => { void submit() } }, h(ArrowUpIcon)))))
 }
 
 // One conversation in the main view, drawn with the Bot views' own rows, cards and docks.
@@ -193,7 +219,7 @@ export function Chat({ sessionId, team }) {
         sessionId,
         disabled: waiting,
         placeholder: waiting ? t('Pick a model and {name} can start.', { name }) : name ? t('Message {name}', { name }) : t('Message'),
-        onSend: text => send(text, actions, sessionId),
+        onSend: (text, attachments) => send(text, actions, sessionId, attachments),
         actions,
         useUi: hooks.useUi,
         useRoster: hooks.useRoster,
