@@ -21,33 +21,6 @@ export function roomSubtitle(room, roster) {
   return [t('{count} members', { count: room.members.length }), admin ? t('Admin {name}', { name: admin.name }) : t('No admin')].join(' · ')
 }
 
-// The one guard a group keeps: how many Bot turns may answer Bot calls since the
-// user last wrote in it, after which the group pauses until the user goes on or
-// writes. Empty means the default, three relays per member.
-function RelayLimitRow({ room, update }) {
-  const [draft, setDraft] = useState(room.relayLimit ?? '')
-  useEffect(() => setDraft(room.relayLimit ?? ''), [room.relayLimit])
-  const save = () => {
-    const text = String(draft).trim()
-    if (text === '') {
-      if (room.relayLimit !== undefined) update({ relayLimit: null })
-      return
-    }
-    const limit = Number(text)
-    if (!Number.isInteger(limit) || limit < 1 || limit > 200 || limit === room.relayLimit) { setDraft(room.relayLimit ?? ''); return }
-    update({ relayLimit: limit })
-  }
-  return h(Row, { label: t('Pause Bot relays after'), hint: t('Counted since your last message in this group.') },
-    h('input', {
-      className: 'bt-bs-input bt-bs-num', type: 'number', min: 1, max: 200,
-      placeholder: String(room.relayLimitDefault ?? ''), value: draft,
-      'aria-label': t('Pause Bot relays after'),
-      onChange: event => setDraft(event.target.value),
-      onBlur: save,
-      onKeyDown: event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } },
-    }))
-}
-
 // One preset for every member in the group, or each member's own. Turning it on starts
 // from DSH's default preset.
 function GroupPermission({ room, catalog, update }) {
@@ -102,8 +75,7 @@ export function GroupSettingsForm({ room, roster, actions, run, onDeleted }) {
           title: id === 'admin' && !admin ? t('Choose an admin first') : undefined,
           onClick: () => { if (mode !== id) void update({ mode: id }) },
         }, t(label)))),
-        h('span', { key: mode, className: 'bt-set-hint bt-veil' }, `${t(modeHint)} ${t('@mentions always pick who answers.')}`)),
-      h(RelayLimitRow, { room, update })),
+        h('span', { key: mode, className: 'bt-set-hint bt-veil' }, `${t(modeHint)} ${t('@mentions always pick who answers.')}`))),
     h(Card, { title: t('Working folder') },
       h('div', { className: 'bt-set-row bt-bs-row' },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Folder'))),

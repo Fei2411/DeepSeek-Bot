@@ -275,8 +275,6 @@ var ZH = {
   "Who answers": "谁来回答",
   "Choose an admin first": "先选一个管理员",
   "@mentions always pick who answers.": "@提及总是指定由谁回答。",
-  "Pause Bot relays after": "Bot 接力几次后暂停",
-  "Counted since your last message in this group.": "从你在群里的上一条消息算起。",
   Notice: "群公告",
   "Shared instructions every member reads before speaking…": "每位成员发言前都会读到的共同说明…",
   "Group notice": "群公告",
@@ -655,7 +653,6 @@ var ZH = {
   "{name} did not answer or call anyone; call a member with @Name": "{name} 没有回答，也没有叫谁；用 @名字 叫一个成员来回答",
   "The group replies could not be shown": "群里的回复显示不出来",
   "Paused after {count} Bot relays. Waiting: {names}": "Bot 之间已接力 {count} 次，先停下了。还在等：{names}",
-  "Continue": "继续",
   "{name} paused for your approval": "{name} 停下来等你批准",
   "{name} started on it": "{name} 开始做了",
   "You stopped {name}'s work": "你停下了 {name} 的工作",
@@ -1689,7 +1686,6 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     setPrefs: (prefs) => after(call2("set-prefs", prefs)),
     setMain: (id, main = true, options = {}) => after(call2("set-main", { id, main, ...options })),
     updateRoom: (id, patch) => after(call2("update-room", { id, ...patch })),
-    continueRoom: (roomId) => after(call2("room-continue", { roomId })),
     send: (sessionId, text) => after(call2("send", { sessionId: partFor(sessionId), text })),
     answerQuestion: (sessionId, questionId, answer) => after(call2("answer-question", { sessionId: partFor(sessionId), questionId, answer })),
     dismissQuestion: (sessionId) => after(call2("dismiss-question", { sessionId })),
@@ -8533,7 +8529,7 @@ function scanReplies(text, start, replies) {
   }
 }
 function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi, useWork }) {
-  const [live, setLive] = (0, import_react16.useState)({ replies: [], speaking: null });
+  const [live, setLive] = (0, import_react16.useState)({ replies: [], speaking: [] });
   (0, import_react16.useEffect)(() => {
     if (done) return void 0;
     let stop = false;
@@ -8546,7 +8542,7 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
       const key = entry ? JSON.stringify([entry.replies, entry.speaking]) : "";
       if (entry && key !== seen) {
         seen = key;
-        setLive({ replies: entry.replies ?? [], speaking: entry.speaking ?? null });
+        setLive({ replies: entry.replies ?? [], speaking: [entry.speaking ?? []].flat() });
       }
       timer = setTimeout(tick, document.hidden ? 5e3 : 1e3);
     };
@@ -8563,9 +8559,11 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
     replies = parsed.replies.length ? parsed.replies : live.replies;
     broken = parsed.broken;
   }
-  const pending = done || !live.speaking ? [] : [live.speaking];
-  const speakerTool = useWork?.((work) => work.bots?.[live.speaking]?.tool) ?? void 0;
-  const speakerDoing = useWork?.((work) => work.bots?.[live.speaking]?.tool ? workPhrase(work.bots[live.speaking]) : void 0) ?? void 0;
+  const pending = done ? [] : live.speaking;
+  const doing = JSON.parse(useWork?.((work) => JSON.stringify(pending.map((id) => {
+    const tool = work.bots?.[id]?.tool;
+    return tool ? [tool, workPhrase(work.bots[id])] : [];
+  }))) ?? "[]");
   if (replies.length === 0 && pending.length === 0) {
     return broken ? (0, import_react16.createElement)("div", { className: "bt-group-replies" }, (0, import_react16.createElement)("div", { className: "bt-event" }, t("The group replies could not be shown"))) : null;
   }
@@ -8611,8 +8609,7 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
         return (0, import_react16.createElement)(
           "div",
           { key: `paused-${index}`, className: "bt-event" },
-          (0, import_react16.createElement)("span", null, t("Paused after {count} Bot relays. Waiting: {names}", { count: reply.count, names: (reply.names ?? []).join(t(" and ")) })),
-          room2?.paused?.length > 0 ? (0, import_react16.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: () => actions.continueRoom(sessionId) }, t("Continue")) : null
+          t("Paused after {count} Bot relays. Waiting: {names}", { count: reply.count, names: (reply.names ?? []).join(t(" and ")) })
         );
       }
       if (reply.kind === "resumed") {
@@ -8633,6 +8630,9 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
           )
         );
       }
+      if (reply.kind === "folder") {
+        return (0, import_react16.createElement)("div", { key: `folder-${index}`, className: "bt-event" }, reply.text);
+      }
       if (reply.kind === "stopped") {
         return (0, import_react16.createElement)("div", { key: `${reply.botId}-${index}`, className: "bt-event" }, t("You stopped {name}'s work", { name: bot.name }));
       }
@@ -8641,14 +8641,15 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
       }
       return (0, import_react16.createElement)(GroupMessage, { key: `${reply.botId}-${index}`, bot, texts: texts2, room: room2, roster, actions, msgKey: callId ? `${sessionId}:${callId}:${index}` : void 0, useUi, time, duration });
     }),
-    pending.map((id) => {
+    pending.map((id, at) => {
       const bot = roster.byId[id];
       if (!bot) return null;
+      const [tool, phrase] = doing[at] ?? [];
       return (0, import_react16.createElement)(
         "div",
         { key: `pending-${id}`, className: "bt-activity" },
-        (0, import_react16.createElement)(BotMark, { bot, size: 22, state: speakerTool ? toolState(speakerTool) : "thinking" }),
-        (0, import_react16.createElement)(Shimmer, null, speakerDoing ? `${bot.name} · ${speakerDoing}…` : t("{name} is typing…", { name: bot.name }))
+        (0, import_react16.createElement)(BotMark, { bot, size: 22, state: tool ? toolState(tool) : "thinking" }),
+        (0, import_react16.createElement)(Shimmer, null, phrase ? `${bot.name} · ${phrase}…` : t("{name} is typing…", { name: bot.name }))
       );
     })
   );
@@ -13489,7 +13490,6 @@ label.bt-bs-row{cursor:text}
 .bt-bs-input:hover{background:var(--bt-hover)}
 .bt-bs-input:focus{background:var(--bt-main);border-color:var(--bt-line-2);text-align:left}
 .bt-bs-input::placeholder{color:var(--bt-ink-3)}
-.bt-bs-input.bt-bs-num{flex:0 0 72px;min-width:0}
 .bt-bs-stack{flex-direction:column;align-items:stretch;gap:8px}
 .bt-bs-area{flex:none;width:auto;min-height:112px;height:auto;margin:0 -6px -4px;padding:8px;line-height:19px;text-align:left;resize:vertical;background:var(--bt-hover)}
 .bt-bs-area:hover{background:var(--bt-active)}
@@ -14350,44 +14350,6 @@ function roomSubtitle(room2, roster) {
   const admin = roster.byId[room2.admin];
   return [t("{count} members", { count: room2.members.length }), admin ? t("Admin {name}", { name: admin.name }) : t("No admin")].join(" · ");
 }
-function RelayLimitRow({ room: room2, update }) {
-  const [draft, setDraft] = (0, import_react36.useState)(room2.relayLimit ?? "");
-  (0, import_react36.useEffect)(() => setDraft(room2.relayLimit ?? ""), [room2.relayLimit]);
-  const save = () => {
-    const text = String(draft).trim();
-    if (text === "") {
-      if (room2.relayLimit !== void 0) update({ relayLimit: null });
-      return;
-    }
-    const limit = Number(text);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 200 || limit === room2.relayLimit) {
-      setDraft(room2.relayLimit ?? "");
-      return;
-    }
-    update({ relayLimit: limit });
-  };
-  return (0, import_react36.createElement)(
-    Row,
-    { label: t("Pause Bot relays after"), hint: t("Counted since your last message in this group.") },
-    (0, import_react36.createElement)("input", {
-      className: "bt-bs-input bt-bs-num",
-      type: "number",
-      min: 1,
-      max: 200,
-      placeholder: String(room2.relayLimitDefault ?? ""),
-      value: draft,
-      "aria-label": t("Pause Bot relays after"),
-      onChange: (event) => setDraft(event.target.value),
-      onBlur: save,
-      onKeyDown: (event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          event.currentTarget.blur();
-        }
-      }
-    })
-  );
-}
 function GroupPermission({ room: room2, catalog, update }) {
   if (!catalog?.options?.length) return null;
   const shared2 = room2.permission !== void 0;
@@ -14479,8 +14441,7 @@ function GroupSettingsForm({ room: room2, roster, actions, run: run2, onDeleted 
           }
         }, t(label)))),
         (0, import_react36.createElement)("span", { key: mode, className: "bt-set-hint bt-veil" }, `${t(modeHint)} ${t("@mentions always pick who answers.")}`)
-      ),
-      (0, import_react36.createElement)(RelayLimitRow, { room: room2, update })
+      )
     ),
     (0, import_react36.createElement)(
       Card2,

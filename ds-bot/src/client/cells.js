@@ -870,7 +870,7 @@ function scanReplies(text, start, replies) {
 }
 
 function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi, useWork }) {
-  const [live, setLive] = useState({ replies: [], speaking: null })
+  const [live, setLive] = useState({ replies: [], speaking: [] })
   useEffect(() => {
     if (done) return undefined
     let stop = false
@@ -881,7 +881,7 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
       if (stop) return
       const entry = (result ?? []).find(item => item.callId === callId) ?? (result ?? [])[0]
       const key = entry ? JSON.stringify([entry.replies, entry.speaking]) : ''
-      if (entry && key !== seen) { seen = key; setLive({ replies: entry.replies ?? [], speaking: entry.speaking ?? null }) }
+      if (entry && key !== seen) { seen = key; setLive({ replies: entry.replies ?? [], speaking: [entry.speaking ?? []].flat() }) }
       timer = setTimeout(tick, document.hidden ? 5000 : 1000)
     }
     void tick()
@@ -894,10 +894,13 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
     replies = parsed.replies.length ? parsed.replies : live.replies
     broken = parsed.broken
   }
-  // Members speak one at a time, so only the current speaker is typing.
-  const pending = done || !live.speaking ? [] : [live.speaking]
-  const speakerTool = useWork?.(work => work.bots?.[live.speaking]?.tool) ?? undefined
-  const speakerDoing = useWork?.(work => (work.bots?.[live.speaking]?.tool ? workPhrase(work.bots[live.speaking]) : undefined)) ?? undefined
+  // Every member answering in the round is typing; what each is doing comes as text,
+  // so the cell redraws only when that changes.
+  const pending = done ? [] : live.speaking
+  const doing = JSON.parse(useWork?.(work => JSON.stringify(pending.map((id) => {
+    const tool = work.bots?.[id]?.tool
+    return tool ? [tool, workPhrase(work.bots[id])] : []
+  }))) ?? '[]')
   if (replies.length === 0 && pending.length === 0) {
     // A pruned tool result left nothing to draw; keep a marker row instead of an
     // empty turn, which reads as a blank gap on a narrow first paint.
@@ -927,10 +930,10 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
         return h('div', { key: `${reply.botId}-${index}`, className: 'bt-event' },
           t('{name} did not answer or call anyone; call a member with @Name', { name: bot.name }))
       }
+      // LEGACY: rounds from when groups paused at a relay limit.
       if (reply.kind === 'paused') {
         return h('div', { key: `paused-${index}`, className: 'bt-event' },
-          h('span', null, t('Paused after {count} Bot relays. Waiting: {names}', { count: reply.count, names: (reply.names ?? []).join(t(' and ')) })),
-          room?.paused?.length > 0 ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => actions.continueRoom(sessionId) }, t('Continue')) : null)
+          t('Paused after {count} Bot relays. Waiting: {names}', { count: reply.count, names: (reply.names ?? []).join(t(' and ')) }))
       }
       if (reply.kind === 'resumed') {
         return h('div', { key: `${reply.botId}-${index}`, className: 'bt-event' }, t('{name} was cut off by a restart and picked its work back up', { name: bot.name }))
@@ -943,6 +946,9 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
           h('button', { type: 'button', className: 'bt-event-whole', onClick: () => actions.showDetails(sessionId) },
             h(BotMark, { bot, size: 16 }), h('span', { className: 'bt-event-name' }, t(reply.kind === 'working' ? '{name} started on it' : '{name} paused for your approval', { name: bot.name }))))
       }
+      if (reply.kind === 'folder') {
+        return h('div', { key: `folder-${index}`, className: 'bt-event' }, reply.text)
+      }
       if (reply.kind === 'stopped') {
         return h('div', { key: `${reply.botId}-${index}`, className: 'bt-event' }, t("You stopped {name}'s work", { name: bot.name }))
       }
@@ -951,12 +957,13 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
       }
       return h(GroupMessage, { key: `${reply.botId}-${index}`, bot, texts, room, roster, actions, msgKey: callId ? `${sessionId}:${callId}:${index}` : undefined, useUi, time, duration })
     }),
-    pending.map((id) => {
+    pending.map((id, at) => {
       const bot = roster.byId[id]
       if (!bot) return null
+      const [tool, phrase] = doing[at] ?? []
       return h('div', { key: `pending-${id}`, className: 'bt-activity' },
-        h(BotMark, { bot: bot, size: 22, state: speakerTool ? toolState(speakerTool) : 'thinking' }),
-        h(Shimmer, null, speakerDoing ? `${bot.name} · ${speakerDoing}…` : t('{name} is typing…', { name: bot.name })))
+        h(BotMark, { bot: bot, size: 22, state: tool ? toolState(tool) : 'thinking' }),
+        h(Shimmer, null, phrase ? `${bot.name} · ${phrase}…` : t('{name} is typing…', { name: bot.name })))
     }))
 }
 
