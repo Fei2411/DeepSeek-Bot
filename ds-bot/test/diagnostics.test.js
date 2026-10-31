@@ -228,7 +228,7 @@ function turnsHost() {
   }
   installTurns(rt)
   let seq = 0
-  const emit = (id, type, data) => listener({ id }, { type, seq: ++seq, data })
+  const emit = (id, type, data, session) => listener(session ?? { id }, { type, seq: ++seq, data })
   return { rt, emit, delivered, noted }
 }
 
@@ -261,6 +261,22 @@ test('a failed group turn fails its waiter; a stopped one counts as no answer', 
   emit('b', 'user/message', { content: [], source: { kind: SOURCE_KIND, role: 'room', exchangeId: 'r2' } })
   emit('b', 'turn/end', { turn: 2, reason: { kind: 'aborted', reason: { kind: 'user' } } })
   assert.equal(value, null)
+})
+
+// #637: the route a refused turn ran on is read from the Session's request header,
+// not from the Bot's record — a group Session may carry another Bot's route.
+test('a turn refused for not being a model endpoint refuses that route', () => {
+  const { rt, emit } = turnsHost()
+  const calls = []
+  rt.routeRefused = async (ref, bot) => { calls.push([ref, bot?.id]) }
+  const session = { id: 'b', requestHeader: () => ({ config: { provider: 'external', model: 'default' } }) }
+  emit('b', 'turn/start', { turn: 1 }, session)
+  emit('b', 'turn/end', { turn: 1, reason: { kind: 'error', error: { code: 'HOSTED_ENGINE_ROUTE', message: 'provider "external" is a hosted loop engine route, not a model endpoint' } } }, session)
+  assert.deepEqual(calls, [['external/default', 'b']])
+  // An ordinary failure takes no such path.
+  emit('b', 'turn/start', { turn: 2 }, session)
+  emit('b', 'turn/end', { turn: 2, reason: failed }, session)
+  assert.equal(calls.length, 1)
 })
 
 test('issueUrl fills the issue form, keeps the versions when the errors are too long, and falls back to the clipboard', async () => {

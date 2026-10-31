@@ -616,6 +616,13 @@ export function install(rt) {
         const reason = event.data?.reason
         const failure = reason?.kind === 'error' && !switched ? turnFailure(reason.error) : undefined
         if (failure !== undefined) noteTurnFailure(id, failure)
+        // A route that is not a model endpoint refuses every generation; the failed
+        // Session's own request names it, so it is refused everywhere from now on.
+        if (failure?.code === 'HOSTED_ENGINE_ROUTE') {
+          const config = session.requestHeader?.()?.config
+          const ref = config?.provider && config?.model ? `${config.provider}/${config.model}` : undefined
+          if (ref !== undefined) void rt.routeRefused(ref, rt.botOf(rt.selfOf(id))).catch(error => rt.warn('ds-bot: %s still failing: %s', ref, error))
+        }
         const held = rt.groupOwners.has(id) ? rt.takeRoomSteps?.(id) ?? '' : ''
         if (switched) break
         // A model that writes its tool call as text ends the turn as if it were done,

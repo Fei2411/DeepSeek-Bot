@@ -11,6 +11,11 @@ export function install(rt) {
 
   let modelsSynced = null
   let catalogCache = { at: 0, value: [] }
+  // Routes DSH serves that cannot answer a request at all — a hosted loop engine
+  // publishes one so its Sessions can be prompted. Once one refuses with
+  // HOSTED_ENGINE_ROUTE it is remembered, and nothing chooses it again this run.
+  const refused = new Set()
+  const answerable = entries => (refused.size === 0 ? entries : entries.filter(entry => !refused.has(entry.ref)))
   // A model's thinking levels, resolved once and kept for a short while: they change
   // only with the provider, which also drops the catalog cache.
   const reasoningCache = new Map()
@@ -36,7 +41,7 @@ export function install(rt) {
   // that is about to be used asks for a `fresh` one. Entries for models a Bot uses
   // also carry their `reasoning`, so the picker can offer thinking levels.
   async function catalog({ fresh = false } = {}) {
-    if (!fresh && Date.now() - catalogCache.at < CATALOG_TTL_MS && catalogCache.value.length > 0) return catalogCache.value
+    if (!fresh && Date.now() - catalogCache.at < CATALOG_TTL_MS && catalogCache.value.length > 0) return answerable(catalogCache.value)
     const entries = []
     for (const provider of ctx.llm.listProviders()) {
       let models = []
@@ -62,18 +67,21 @@ export function install(rt) {
       if (reasoning !== undefined) entry.reasoning = reasoning
     }))
     catalogCache = { at: Date.now(), value: entries }
-    return entries
+    return answerable(entries)
   }
 
-  // The profile default model of DSH as set, served or not.
+  // The profile default model of DSH as set, served or not, and able to answer.
   const defaultRef = () => {
     const selection = ctx.get?.('agentDefaultModel')?.currentSelection?.()
-    return selection?.provider && selection?.model ? `${selection.provider}/${selection.model}` : undefined
+    if (!selection?.provider || !selection?.model) return undefined
+    const ref = `${selection.provider}/${selection.model}`
+    return refused.has(ref) ? undefined : ref
   }
   // The profile default model of DSH, when it is served; else the first served model.
   function pickDefault(entries) {
     const ref = defaultRef()
-    return entries.find(entry => entry.ref === ref)?.ref ?? entries[0]?.ref
+    const list = answerable(entries)
+    return list.find(entry => entry.ref === ref)?.ref ?? list[0]?.ref
   }
   const defaultModel = async () => pickDefault(await catalog())
 
@@ -208,10 +216,28 @@ export function install(rt) {
     }
   }
 
+  // A route that refused a request for not being a model endpoint: it stays out of
+  // the catalog from now on, the Bots pinned to it move to what they would be given
+  // today, and the Bot whose turn failed re-selects — its group Session may carry
+  // another Bot's route, so `force` re-selects even when its record looks applied.
+  async function routeRefused(ref, bot) {
+    if (!refused.has(ref)) {
+      refused.add(ref)
+      rt.warn('ds-bot: %s is not a model endpoint, so it is not chosen again', ref)
+      const entries = await catalog()
+      for (const other of Object.values(state.bots)) {
+        if (other.model === ref) other.model = pickDefault(entries)
+        if (other.appliedModel === ref) delete other.appliedModel
+      }
+      await rt.save()
+    }
+    if (bot !== undefined) await applyModel(bot, { force: true })
+  }
+
   Object.assign(rt, {
-    catalog, cachedCatalog: () => catalogCache.value, cachedDefault: () => pickDefault(catalogCache.value),
+    catalog, cachedCatalog: () => answerable(catalogCache.value), cachedDefault: () => pickDefault(catalogCache.value),
     defaultRef, defaultModel, defaultEffort, resolveModel, desiredModel, reasoningOf, resolveEffort, desiredEffort,
-    selectSessionModel, applyModel, waitForModel, syncModels,
+    selectSessionModel, applyModel, waitForModel, syncModels, routeRefused,
     dropCatalog: () => { catalogCache = { at: 0, value: [] } },
   })
 }

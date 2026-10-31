@@ -164,6 +164,36 @@ test('the catalog attaches thinking levels to models a Bot uses', async () => {
   assert.equal(entries.find(entry => entry.ref === 'stepfun/step-5')?.reasoning, undefined)
 })
 
+// #637: a hosted loop engine publishes a route that resolves models but refuses every
+// generation with HOSTED_ENGINE_ROUTE; once it refuses, nothing chooses it again.
+test('a route refused for not being a model endpoint is chosen nowhere again', async () => {
+  const { rt, selected } = bench({ providers: { external: ['default'], deepseek: ['v4-flash'] }, fallback: { provider: 'external', model: 'default' } })
+  const pinned = { id: 'b1', model: 'external/default', appliedModel: 'external/default' }
+  const clean = { id: 'b2', model: 'deepseek/v4-flash' }
+  rt.state.bots = { b1: pinned, b2: clean }
+  await rt.routeRefused('external/default', pinned)
+  // The pinned Bot moves to what it would be given today and re-selects its Session.
+  assert.equal(pinned.model, 'deepseek/v4-flash')
+  assert.equal(pinned.appliedModel, 'deepseek/v4-flash')
+  assert.equal(clean.model, 'deepseek/v4-flash')
+  assert.deepEqual(selected, ['b1:deepseek/v4-flash'])
+  // Pickers, the deployment default and explicit naming keep it out too.
+  assert.deepEqual((await rt.catalog({ fresh: true })).map(entry => entry.ref), ['deepseek/v4-flash'])
+  assert.deepEqual(rt.cachedCatalog().map(entry => entry.ref), ['deepseek/v4-flash'])
+  assert.equal(await rt.defaultModel(), 'deepseek/v4-flash')
+  await assert.rejects(rt.resolveModel('external/default'), /Model external\/default is not available/)
+})
+
+test('a Bot on a clean record but a poisoned Session re-selects its own model', async () => {
+  const { rt, selected } = bench({ providers: { external: ['default'], deepseek: ['v4-flash'] }, fallback: { provider: 'external', model: 'default' } })
+  // Its group Session ran on another Bot's route; its own record never named it.
+  const bot = { id: 'b1', model: 'deepseek/v4-flash', appliedModel: 'deepseek/v4-flash' }
+  rt.state.bots = { b1: bot }
+  await rt.routeRefused('external/default', bot)
+  assert.equal(bot.model, 'deepseek/v4-flash')
+  assert.deepEqual(selected, ['b1:deepseek/v4-flash'])
+})
+
 test('a greeting waits for the provider of its Bot model to register', async () => {
   const { rt, providers, listeners } = bench({ providers: {} })
   const waiting = rt.waitForModel({ model: 'stepfun/step-5' }, 5000)
