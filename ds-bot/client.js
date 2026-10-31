@@ -96,6 +96,7 @@ var ZH = {
   // Sidebar and account menu
   "Bot list": "Bot 列表",
   "Setting up your Main Bot…": "正在设置你的主 Bot…",
+  "The Bot team could not start. Settings → Feedback has the details.": "Bot 团队启动失败，详情见「设置 → 反馈」。",
   "Automation tasks": "自动化任务",
   Connectors: "连接器",
   "Search connectors": "搜索连接器",
@@ -9700,7 +9701,7 @@ function TeamSidebar(props) {
     { className: "bt-rail-top" },
     (0, import_react18.createElement)(UpdateButton, { useUpdate: props.useUpdate, actions }),
     (0, import_react18.createElement)("button", { type: "button", className: "bt-round bt-side-collapse", "aria-label": t("Collapse sidebar"), title: t("Collapse sidebar"), onClick: onToggle }, (0, import_react18.createElement)(SidebarIcon)),
-    main ? (0, import_react18.createElement)(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : (0, import_react18.createElement)("div", { className: "bt-hint" }, t("Setting up your Main Bot…")),
+    main ? (0, import_react18.createElement)(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : (0, import_react18.createElement)("div", { className: "bt-hint" }, t(uiNow.bootFailed ? "The Bot team could not start. Settings → Feedback has the details." : "Setting up your Main Bot…")),
     (0, import_react18.createElement)("span", { className: "bt-rail-sep", "aria-hidden": true })
   );
   const foot = wideContent ? (0, import_react18.createElement)("div", { className: "bt-leftcol-foot" }, (0, import_react18.createElement)(AccountLauncher, { seat: false, actions })) : (0, import_react18.createElement)(
@@ -9717,7 +9718,7 @@ function TeamSidebar(props) {
     (0, import_react18.createElement)(
       "div",
       { ref: listRef, className: "bt-list", role: "region", "aria-label": t("Bot list") },
-      wideContent ? main ? (0, import_react18.createElement)(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : (0, import_react18.createElement)("div", { className: "bt-hint" }, t("Setting up your Main Bot…")) : null,
+      wideContent ? main ? (0, import_react18.createElement)(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : (0, import_react18.createElement)("div", { className: "bt-hint" }, t(uiNow.bootFailed ? "The Bot team could not start. Settings → Feedback has the details." : "Setting up your Main Bot…")) : null,
       order.map((entry) => entry.kind === "bot" ? (0, import_react18.createElement)(BotRow, { key: entry.item.id, ...rowProps, bot: entry.item, marked: markedUnread[entry.item.id] === true }) : entry.kind === "room" ? (0, import_react18.createElement)(RoomRow, { key: entry.item.id, ...rowProps, room: entry.item, marked: markedUnread[entry.item.id] === true }) : (0, import_react18.createElement)(AgentRow, { key: entry.item.id, ...rowProps, agent: entry.item, marked: markedUnread[entry.item.id] === true }))
     ),
     foot
@@ -20281,7 +20282,7 @@ function apply(ctx) {
   const reactionStore = sharedMap(STORAGE.reactions);
   const seenStore = sharedMap(STORAGE.seen);
   let seenAt = seenStore.read();
-  const ui2 = createSource({ details: null, view: "details", renaming: false, tab: null, side: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: unreadStore.read(), reactions: reactionStore.read(), visits: {}, panelYield: false, leftDrawer: false });
+  const ui2 = createSource({ details: null, view: "details", renaming: false, tab: null, side: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: unreadStore.read(), reactions: reactionStore.read(), visits: {}, panelYield: false, leftDrawer: false, bootFailed: false });
   let sidebarSaved = readSidebar();
   const sidebarPref = createSource(sidebarSaved.pref);
   const frame = createSource({ viewport: typeof window === "undefined" ? 0 : window.innerWidth, sidebarWidth: sidebarSaved.width, collapsedWidth: 0, collapsed: false });
@@ -20404,14 +20405,20 @@ function apply(ctx) {
     let stopped = false;
     let running = false;
     let timer;
+    let misses = 0;
     const loop = async () => {
       clearTimeout(timer);
       if (running || stopped) return;
       running = true;
       try {
         await pull();
+        misses = 0;
       } catch (error) {
-        if (!stopped) console.warn("[ds-bot] state", error);
+        if (!stopped) {
+          console.warn("[ds-bot] state", error);
+          misses += 1;
+          if (misses >= 10 && !roster.getSnapshot().ready) ui2.set((state) => state.bootFailed ? state : { ...state, bootFailed: true });
+        }
       } finally {
         running = false;
       }

@@ -58,6 +58,11 @@ async function main() {
   const [webServer, connection] = [ctx.get('webServer'), ctx.get('connection')]
   // A profile patch can turn these rows off; then the window has nothing to talk to.
   if (webServer === undefined || connection === undefined) throw new Error(`The profile in ${profile.dir} does not start the engine's web server and connection.`)
+  // ds-bot waits on these before it registers its API. A Session-store failure
+  // must reach the shell's error box here, not read as an endless
+  // "Setting up your Main Bot…" in a window that looks ready (#516).
+  const missing = ['sessionController', 'workspaceRegistry'].filter(name => ctx.get(name) === undefined)
+  if (missing.length > 0) throw new Error(`The profile in ${profile.dir} did not start ${missing.join(', ')}; the engine log has the cause.`)
   const url = connection.authenticatedUrl(`http://127.0.0.1:${String(webServer.port)}`)
   await send({ type: 'ready', url, injections: webServer.collectIndexInjections() })
 }
