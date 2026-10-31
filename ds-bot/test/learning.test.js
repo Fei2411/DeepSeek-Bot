@@ -37,6 +37,7 @@ const createReply = JSON.stringify({
 })
 const noneReply = JSON.stringify({ action: 'none', reason: 'This work taught nothing reusable.' })
 
+let rt
 function start({ replies = [], config = {}, history = {}, seed = TEAM, learningSeed = {} } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-learning-'))
   writeFileSync(join(home, 'state.json'), JSON.stringify(JSON.parse(JSON.stringify(seed))))
@@ -92,7 +93,7 @@ function start({ replies = [], config = {}, history = {}, seed = TEAM, learningS
     ...config,
     learningTimes: { minTurnMs: 0, idleMs: 0, intervalMs: 0, tickMs: 10, ...config.learningTimes },
   }
-  const rt = createRuntime(ctx, { home, ...settings })
+  rt = createRuntime(ctx, { home, ...settings })
   const call = async (endpoint, payload = {}) => {
     const response = await route.fetch(new Request('http://localhost/api/bot', {
       method: 'POST',

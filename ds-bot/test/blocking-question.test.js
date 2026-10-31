@@ -70,7 +70,7 @@ async function setup({ served = ['read', 'ask_user', QUESTION], goals } = {}) {
     sessionTitle: { rename: async () => {} },
     sessions: { flush: async () => {} },
   })
-  const rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
+  rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
   await rt.load()
   const guard = (name, sessionId) => ctx.guards.map(check => check({ name, agent: sessionId === undefined ? undefined : { id: sessionId } })).find(reason => reason !== undefined)
   const hiddenIn = id => hidden.filter(([sessionId, deny]) => sessionId === id && deny.includes(QUESTION))
@@ -99,6 +99,7 @@ function goalService() {
 }
 
 // What DSH logs when /goal starts a goal: a snapshot change of the Session's goal log.
+let rt
 const startGoal = (ctx, goals, sessionId) => {
   const goal = { id: `goal-${sessionId}`, revision: 1, objective: 'Ship it', phase: 'active', maxGoalRounds: 256 }
   goals?.current.set(sessionId, goal)

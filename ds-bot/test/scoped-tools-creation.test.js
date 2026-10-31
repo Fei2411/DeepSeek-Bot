@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
+import { TEAM_TOOLS } from '../src/host/constants.js'
 import { fakeContext } from './fake-ctx.js'
 
 // A Bot-owned Session gets its Agent before ds-bot records the owner, so the
@@ -30,12 +31,21 @@ const TEAM = {
   revision: 0,
 }
 
-const start = (team = TEAM, services = {}) => {
+let rt
+const start = (team = TEAM, services = {}, globals = []) => {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-scoped-'))
   writeFileSync(join(home, 'state.json'), JSON.stringify(team))
   const ctx = fakeContext({ services })
   // Another plugin's global show_view, in place before ds-bot loads.
   ctx.tools.register({ name: 'show_view', description: 'global', execute: async () => 'global' })
+  for (const tool of globals) ctx.tools.register(tool)
+  // DSH refuses a second global registration of one name — the throw that killed
+  // ds-bot's boot in #703 — so the fake refuses the same way.
+  const plainRegister = ctx.tools.register.bind(ctx.tools)
+  ctx.tools.register = (tool) => {
+    if (ctx.registeredTools.has(tool.name)) throw new Error(`tool "${tool.name}" is already registered`)
+    return plainRegister(tool)
+  }
   const scoped = []
   const restricted = []
   let sessions = 0
@@ -47,7 +57,7 @@ const start = (team = TEAM, services = {}) => {
       session: { id: sessionId, header: { cwd: '/team' }, requestHeader: () => undefined, deriveMessages: () => [] },
       ctx: {
         tools: {
-          register: (tool) => { scoped.push({ sessionId, name: tool.name }); return () => {} },
+          register: (tool) => { scoped.push({ sessionId, name: tool.name, tool }); return () => {} },
           restrict: (filter) => { restricted.push({ sessionId, deny: filter.deny ?? [] }); return () => {} },
         },
         effect: execute => (typeof execute === 'function' ? execute() : undefined),
@@ -101,7 +111,7 @@ const start = (team = TEAM, services = {}) => {
   let route
   const register = ctx.connection.fetch.register
   ctx.connection.fetch.register = (options) => { route = options; return register(options) }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', {
     method: 'POST', body: JSON.stringify({ endpoint, payload }),
   }))).json()
@@ -114,7 +124,7 @@ const start = (team = TEAM, services = {}) => {
     for (const listener of ctx.listeners.get('agent/created') ?? []) await listener({ agent: agentOf(sessionId) })
   }
   const tool = (name, args, sessionId, exec = {}) =>
-    ctx.registeredTools.get(name).execute(args, { agent: agentOf(sessionId), name, callId: 'c1', ...exec })
+    rt.teamTools.find(d => d.name === name).execute(args, { agent: agentOf(sessionId), name, callId: 'c1', ...exec })
   const stop = async () => {
     await ctx.dispose()
     rmSync(home, { recursive: true, force: true, maxRetries: 5 })
@@ -132,6 +142,48 @@ const until = async (check, ms = 3000) => {
 
 const hasShowView = (host, id) => host.scoped.some(entry => entry.sessionId === id && entry.name === 'show_view')
 const denied = (host, id) => host.restricted.some(entry => entry.sessionId === id && entry.deny.includes('ask_user_question'))
+const scopedNames = (host, id) => host.scoped.filter(entry => entry.sessionId === id).map(entry => entry.name)
+
+test('a Bot Session gets every team tool in its own scope', async (t) => {
+  const host = start()
+  t.after(host.stop)
+  await host.call('state', {})
+  await host.agentCreated('a')
+  assert.deepEqual(scopedNames(host, 'a').sort(), [...TEAM_TOOLS].filter(name => name !== 'read_browser').sort())
+})
+
+test('a Session ds-bot does not own sees none of the team tools', async (t) => {
+  const host = start()
+  t.after(host.stop)
+  await host.call('state', {})
+  await host.agentCreated('plain1')
+  assert.deepEqual(scopedNames(host, 'plain1'), [])
+  // Nothing of the team's reaches the global layer a plain session reads; the
+  // only team-named global is another plugin's show_view.
+  const leaked = [...host.ctx.registeredTools.keys()].filter(name => TEAM_TOOLS.includes(name))
+  assert.deepEqual(leaked, ['show_view'])
+  assert.equal(host.ctx.registeredTools.get('show_view').description, 'global')
+})
+
+test("a group's own Session is scoped to group_relay alone", async (t) => {
+  const host = start()
+  t.after(host.stop)
+  await host.call('state', {})
+  await host.agentCreated('r1')
+  assert.deepEqual(scopedNames(host, 'r1'), ['group_relay'])
+})
+
+test("another plugin's global recall cannot stop ds-bot or shadow its own", async (t) => {
+  // #703: a same-named global tool from another plugin must not fail apply(),
+  // and inside a Bot Session ds-bot's recall still wins.
+  const host = start(TEAM, {}, [{ name: 'recall', description: 'foreign recall', execute: async () => 'foreign' }])
+  t.after(host.stop)
+  assert.equal(host.ctx.registeredTools.get('recall').description, 'foreign recall')
+  await host.call('state', {})
+  await host.agentCreated('a')
+  const recall = host.scoped.find(entry => entry.sessionId === 'a' && entry.name === 'recall')
+  assert.match(String(recall?.tool?.description), /^Search your memory/)
+})
 
 test('a Bot made without a model has the scoped tools before its first step', async (t) => {
   const host = start({ ...TEAM, rooms: {} })

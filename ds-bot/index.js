@@ -67,6 +67,9 @@ export function createRuntime(ctx, config = {}) {
     dshHome,
     home,
     statePath: join(home, 'state.json'),
+    // The Bot-only tools each module defines; tools.js registers them in each
+    // Bot Session's own scope, never globally (see shareBotTools).
+    teamTools: [],
     defaults: {
       mainName: config.mainName ?? 'Chief',
       mainRole: config.mainRole ?? 'Chief of Staff',

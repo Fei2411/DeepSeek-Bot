@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { fakeAttachments, fakeContext } from './fake-ctx.js'
 import { install as installTurns } from '../src/host/turns.js'
 import { install as installParts } from '../src/host/parts.js'
 import { SOURCE_KIND } from '../src/host/constants.js'
+
+let rt
 
 // A two-Bot team, optionally with b in a group Session 'gb' of room 'Ops'.
 function team({ group = false } = {}) {
@@ -88,7 +90,7 @@ async function start(seed) {
     route = options
     return register(options)
   }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   let seq = 0
   const emit = (id, type, data, extra) => {
     for (const listener of ctx.listeners.get('session/event') ?? []) {
@@ -97,7 +99,7 @@ async function start(seed) {
   }
   // Runs every registered waterfall listener; `next` settles the chain.
   const fire = (name, payload) => Promise.all((ctx.listeners.get(name) ?? []).map(listener => listener(payload, () => Promise.resolve(undefined))))
-  const tool = (name, args, sessionId) => ctx.registeredTools.get(name).execute(args, { agent: { id: sessionId } })
+  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: sessionId } })
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', {
     method: 'POST', body: JSON.stringify({ endpoint, payload }),
   }))).json()
@@ -860,7 +862,7 @@ test('one turn keeps its identity across two earlier pages', async (t) => {
   let route
   const register = ctx.connection.fetch.register
   ctx.connection.fetch.register = (options) => { route = options; return register(options) }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   t.after(async () => {
     await ctx.dispose()
     rmSync(home, { recursive: true, force: true, maxRetries: 5 })

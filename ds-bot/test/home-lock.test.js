@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from 'node:module'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { homeLock } from '../src/host/home-lock.js'
 import { fakeContext } from './fake-ctx.js'
 
@@ -122,6 +122,7 @@ const TEAM = {
   questions: {},
 }
 
+let rt
 function start(t, home) {
   const ctx = fakeContext()
   let route
@@ -130,7 +131,7 @@ function start(t, home) {
     route = options
     return register(options)
   }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   t.after(() => ctx.dispose())
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))).json()
   call.ctx = ctx
@@ -182,7 +183,7 @@ test('a reading host follows the other host\'s keys, never writes them, and keep
 
   assert.deepEqual(await names(), ['FIRST_KEY'])
   assert.equal((await call('secret-set', { name: 'MINE', value: 'mine-value-1' })).error.code, 'bot/read-only')
-  const asked = await call.ctx.registeredTools.get('request_secret').execute({ name: 'MINE', purpose: 'x' }, { agent: { id: 'm1' } })
+  const asked = await rt.teamTools.find(d => d.name === 'request_secret').execute({ name: 'MINE', purpose: 'x' }, { agent: { id: 'm1' } })
   assert.match(asked, /^No card can be shown now\. The Bot team in .* is open in another dsh/)
   assert.deepEqual((await call('state', {})).value.secretRequests, {})
 

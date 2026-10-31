@@ -8,6 +8,8 @@ import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 import { install as installRequests } from '../src/host/requests.js'
 
+let rt
+
 test('old identities survive age and receipt volume without permitting another delivery', async () => {
   const rt = { state: {}, own: (object, key) => Object.hasOwn(object, key) ? object[key] : undefined, readOnly: () => undefined, save: async () => {}, warn() {} }
   installRequests(rt)
@@ -93,14 +95,14 @@ async function boot(home, seed) {
     sessionTitle: { rename: async () => {} },
     sessions: { flush: async () => {} },
   })
-  const rt = createRuntime(ctx, { home })
+  rt = createRuntime(ctx, { home })
   let seq = 0
   const emit = (id, type, data) => {
     for (const listener of ctx.listeners.get('session/event') ?? []) {
       if (listener.length >= 2) listener({ id }, { type, seq: ++seq, data })
     }
   }
-  const tool = (name, args, sessionId) => ctx.registeredTools.get(name).execute(args, { agent: { id: sessionId } })
+  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: sessionId } })
   const stop = async () => { await ctx.dispose() }
   // Loading once fills the Session-owner indexes turns.js filters events by.
   await tool('list_bots', {}, 'a')

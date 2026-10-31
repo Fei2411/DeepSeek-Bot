@@ -7,6 +7,8 @@ import { createRuntime } from '../index.js'
 import { expandCapabilityNames, validateCapabilityName } from '../src/host/capabilities.js'
 import { fakeContext } from './fake-ctx.js'
 
+let rt
+
 const makeHome = state => {
   const home = mkdtempSync(join(tmpdir(), 'dsb-capabilities-'))
   writeFileSync(join(home, 'state.json'), JSON.stringify(state))
@@ -67,7 +69,7 @@ async function setup({ state = team(), secret, beforeLoad } = {}) {
   const mcpPlugin = { name: 'mcp-client', apply() {} }
   const loader = { import: async () => ({ default: mcpPlugin }), unwrapExports: exports => exports.default }
   const ctx = fakeContext({ services: { loader } })
-  const rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
+  rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
   ctx.sessionTitle = { rename: async () => {} }
   rt.resolveAgent = async sessionId => ({ session: { id: sessionId } })
   beforeLoad?.({ ctx, rt, mounts, skills, mcpPlugin })
@@ -147,7 +149,7 @@ test('Bot saves enforce approval and ownership, and deletion cascades', async t 
 test('capability Bot tools refuse DSH Agent sessions', async t => {
   const env = await setup()
   t.after(() => env.dispose())
-  const list = env.ctx.registeredTools.get('list_capabilities')
+  const list = env.rt.teamTools.find(d => d.name === 'list_capabilities')
   assert.ok(list)
   assert.match(await list.execute({}, { agent: { id: 'outside' } }), /Only Bots on the team/)
 })
@@ -155,7 +157,7 @@ test('capability Bot tools refuse DSH Agent sessions', async t => {
 test('capability tool descriptions and attach results explain approval', async t => {
   const env = await setup()
   t.after(() => env.dispose())
-  const parameters = env.ctx.registeredTools.get('save_capability').parameters.properties
+  const parameters = env.rt.teamTools.find(d => d.name === 'save_capability').parameters.properties
   assert.deepEqual(
     Object.fromEntries(['transport', 'command', 'args', 'env', 'url', 'headers', 'content'].map(name => [name, parameters[name].description])),
     {
@@ -169,7 +171,7 @@ test('capability tool descriptions and attach results explain approval', async t
     },
   )
   await env.rt.capabilitySave(mcp('blocked'), { botId: 'worker' })
-  const attached = await env.ctx.registeredTools.get('attach_capability').execute(
+  const attached = await env.rt.teamTools.find(d => d.name === 'attach_capability').execute(
     { name: 'blocked' },
     { agent: { id: 'worker' } },
   )
@@ -360,14 +362,14 @@ test('unloading the plugin disposes every capability mount', async t => {
 test('unset capability statuses are omitted from the view and tool listing', async t => {
   const env = await setup()
   t.after(() => env.dispose())
-  const { rt, ctx } = env
+  const { rt } = env
   await rt.capabilitySave({ ...mcp('echo'), approved: true }, { botId: 'chief' })
   await rt.capabilitySave({ name: 'guide', kind: 'skill', description: 'Guide', content: 'Instructions' }, { botId: 'chief' })
   await rt.capabilitySave({ name: 'team', kind: 'pack', items: ['echo', 'guide'] }, { botId: 'chief' })
   rt.state.bots.chief.capabilities = ['echo', 'team']
   await rt.save()
   assert.deepEqual(rt.capabilityStatusesView().chief, {})
-  const listed = await ctx.registeredTools.get('list_capabilities').execute({}, { agent: { id: 'chief' } })
+  const listed = await rt.teamTools.find(d => d.name === 'list_capabilities').execute({}, { agent: { id: 'chief' } })
   assert.match(listed, /echo \(mcp\).*; attached to you(?:\n|$)/)
   assert.doesNotMatch(listed, /attached to you \(connecting\)/)
 })

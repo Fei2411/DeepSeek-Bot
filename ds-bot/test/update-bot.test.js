@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 
 const TEAM = {
@@ -28,6 +28,7 @@ const TEAM = {
   questions: {},
 }
 
+let rt
 function start(team = TEAM) {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-update-'))
   if (!existsSync(join(home, 'state.json'))) writeFileSync(join(home, 'state.json'), JSON.stringify(team))
@@ -50,8 +51,8 @@ function start(team = TEAM) {
   let route
   const register = ctx.connection.fetch.register
   ctx.connection.fetch.register = (options) => { route = options; return register(options) }
-  apply(ctx, { home })
-  const tool = (name, args, sessionId) => ctx.registeredTools.get(name).execute(args, { agent: { id: sessionId } })
+  rt = createRuntime(ctx, { home })
+  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: sessionId } })
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))).json()
   const state = () => JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'))
   const stop = async () => {

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { canUse, encodeUrlComponent, normalizeName, redactDeep, redactor, SECRET_NAME } from '../src/host/secrets.js'
 import { fakeContext } from './fake-ctx.js'
 
@@ -82,6 +82,7 @@ const TEAM = {
   questions: {},
 }
 
+let rt
 function start({ home = mkdtempSync(join(tmpdir(), 'ds-bot-secrets-')) } = {}) {
   writeFileSync(join(home, 'state.json'), JSON.stringify(TEAM))
   const contributors = []
@@ -112,7 +113,7 @@ function start({ home = mkdtempSync(join(tmpdir(), 'ds-bot-secrets-')) } = {}) {
   }
   let route
   ctx.connection.fetch.register = (options) => { route = options; return () => {} }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   const call = async (endpoint, payload) => {
     const response = await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))
     return response.json()
@@ -120,7 +121,7 @@ function start({ home = mkdtempSync(join(tmpdir(), 'ds-bot-secrets-')) } = {}) {
   const tool = (name, args, agentId, extra = {}) => {
     let concluded = false
     const exec = { agent: { id: agentId }, callId: `call-${agentId}-${name}`, concludeTurn: () => { concluded = true }, ...extra }
-    return ctx.registeredTools.get(name).execute(args, exec).then(text => ({ text, concluded }))
+    return rt.teamTools.find(d => d.name === name).execute(args, exec).then(text => ({ text, concluded }))
   }
   const view = async () => {
     const result = await call('state', {})

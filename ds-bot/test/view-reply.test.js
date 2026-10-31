@@ -3,9 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { normalizeView, VIEW_BYTE_LIMIT, viewBytes } from 'deep-view/core'
 import { fakeContext } from './fake-ctx.js'
+
+let rt
 
 const TEAM = {
   version: 1,
@@ -51,7 +53,7 @@ async function start() {
     route = options
     return register(options)
   }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   // show_view lives in the agent scope; a Bot agent appearing registers it.
   await ctx.emitAsync('agent/created', { agent: ctx.scopeAgent('writer-now') })
   let seq = 0
@@ -62,7 +64,7 @@ async function start() {
   }
   const show = async (sessionId, args, callId = 'call-1') => {
     let concluded = false
-    const text = await ctx.registeredTools.get('show_view').execute(args, {
+    const text = await rt.teamTools.find(d => d.name === 'show_view').execute(args, {
       agent: { id: sessionId }, callId, concludeTurn() { concluded = true },
     })
     return { text, concluded }
@@ -81,9 +83,9 @@ async function start() {
 const text = value => [{ type: 'text', text: value }]
 
 test('show_view registers an interactive card, refuses a group and a display-only wait, and leaves a display-only card unregistered', async (t) => {
-  const { ctx, emit, show, team, stop } = await start()
+  const { emit, show, team, stop } = await start()
   t.after(stop)
-  await ctx.registeredTools.get('list_bots').execute({}, { agent: { id: 'chief' } })
+  await rt.teamTools.find(d => d.name === 'list_bots').execute({}, { agent: { id: 'chief' } })
 
   const group = await show('writer-group', { title: 'Pick', view: CHOICES })
   assert.equal(group.text, 'View cards only work in your own chat. In a group, ask in your message instead.')
@@ -116,7 +118,7 @@ test('show_view registers an interactive card, refuses a group and a display-onl
   assert.equal((await team()).views['writer-now'], undefined)
 
   // A question card and a view card in the same chat do not replace each other.
-  await ctx.registeredTools.get('ask_user').execute(
+  await rt.teamTools.find(d => d.name === 'ask_user').execute(
     { question: 'Which name?', options: [{ label: 'Lookout' }] },
     { agent: { id: 'writer-now' }, callId: 'q-call', concludeTurn() {} },
   )
@@ -152,10 +154,10 @@ test('show_view registers an interactive card, refuses a group and a display-onl
 })
 
 test('view-reply claims the card, refuses a stale or invalid answer, and restores the card when queueing fails', async (t) => {
-  const { ctx, show, call, team, sent, failFlush, stop } = await start()
+  const { show, call, team, sent, failFlush, stop } = await start()
   t.after(stop)
-  await ctx.registeredTools.get('list_bots').execute({}, { agent: { id: 'chief' } })
-  await ctx.registeredTools.get('ask_user').execute(
+  await rt.teamTools.find(d => d.name === 'list_bots').execute({}, { agent: { id: 'chief' } })
+  await rt.teamTools.find(d => d.name === 'ask_user').execute(
     { question: 'Keep me', options: [{ label: 'Yes' }] },
     { agent: { id: 'writer-now' }, callId: 'q-call', concludeTurn() {} },
   )
@@ -208,10 +210,10 @@ test('view-reply claims the card, refuses a stale or invalid answer, and restore
 })
 
 test('dismiss-view drops the open view and leaves a question card alone', async (t) => {
-  const { ctx, show, call, team, stop } = await start()
+  const { show, call, team, stop } = await start()
   t.after(stop)
-  await ctx.registeredTools.get('list_bots').execute({}, { agent: { id: 'chief' } })
-  await ctx.registeredTools.get('ask_user').execute(
+  await rt.teamTools.find(d => d.name === 'list_bots').execute({}, { agent: { id: 'chief' } })
+  await rt.teamTools.find(d => d.name === 'ask_user').execute(
     { question: 'Keep me', options: [{ label: 'Yes' }] },
     { agent: { id: 'writer-now' }, callId: 'q-call', concludeTurn() {} },
   )
@@ -224,10 +226,10 @@ test('dismiss-view drops the open view and leaves a question card alone', async 
 })
 
 test('a user message drops the open question and the open view together', async (t) => {
-  const { ctx, emit, show, team, stop } = await start()
+  const { emit, show, team, stop } = await start()
   t.after(stop)
-  await ctx.registeredTools.get('list_bots').execute({}, { agent: { id: 'chief' } })
-  await ctx.registeredTools.get('ask_user').execute(
+  await rt.teamTools.find(d => d.name === 'list_bots').execute({}, { agent: { id: 'chief' } })
+  await rt.teamTools.find(d => d.name === 'ask_user').execute(
     { question: 'Which name?', options: [{ label: 'Lookout' }] },
     { agent: { id: 'writer-now' }, callId: 'q-call', concludeTurn() {} },
   )
@@ -241,9 +243,9 @@ test('a user message drops the open question and the open view together', async 
 })
 
 test('show_view measures the bytes the model sent, before unwrapping the provider encoding', async (t) => {
-  const { ctx, show, stop } = await start()
+  const { show, stop } = await start()
   t.after(stop)
-  await ctx.registeredTools.get('list_bots').execute({}, { agent: { id: 'chief' } })
+  await rt.teamTools.find(d => d.name === 'list_bots').execute({}, { agent: { id: 'chief' } })
   // Nested { item: ... } wrappers all disappear in normalization: measured after
   // unwrapping this card would pass with a fraction of the bytes it was sent with.
   let children = [{ type: 'text', text: 'x' }]

@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 
+let rt
+
 // The fixture stands in for an MCP server: it reports back the argv and env it was
 // started with, so the test sees exactly what the plugin passed to the child process.
 const FIXTURE = fileURLToPath(new URL('./fixtures/echo-argv-env.mjs', import.meta.url))
@@ -69,7 +71,7 @@ async function setup({ state = team(), secrets = [] } = {}) {
   const mcpPlugin = { name: 'mcp-client', apply() {} }
   const loader = { import: async () => ({ default: mcpPlugin }), unwrapExports: exports => exports.default }
   const ctx = fakeContext({ services: { loader } })
-  const rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
+  rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
   ctx.sessionTitle = { rename: async () => {} }
   rt.resolveAgent = async sessionId => ({ session: { id: sessionId } })
   await rt.load()

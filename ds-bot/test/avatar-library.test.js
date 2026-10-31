@@ -4,7 +4,7 @@ import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { format } from 'node:util'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 
 // Only the magic bytes matter to the reader; the rest of a fixture need not decode.
@@ -15,6 +15,7 @@ const asDataUrl = (mime, bytes) => `data:${mime};base64,${bytes.toString('base64
 const pngUrl = asDataUrl('image/png', PNG)
 const jpegUrl = asDataUrl('image/jpeg', JPEG)
 
+let rt
 function start(home) {
   const ctx = fakeContext()
   const workspaces = new Map()
@@ -47,7 +48,7 @@ function start(home) {
     route = options
     return register(options)
   }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   const call = async (endpoint, payload) => {
     const response = await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))
     return response.json()
@@ -271,14 +272,14 @@ test('another dsh that holds the team cannot change the library, but may read it
 test('a Bot cannot reach the library: no tool offers it', async (t) => {
   const home = makeHome()
   t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }))
-  const { stop, ctx } = start(home)
+  const { stop } = start(home)
   t.after(stop)
 
-  const names = [...ctx.registeredTools.keys()]
+  const names = rt.teamTools.map(d => d.name)
   assert.equal(names.some(name => /avatar|library|photo/i.test(name)), false)
   // The tools that set a photo still take a path or a data URL.
   for (const name of ['create_bot', 'update_bot']) {
-    const schema = ctx.registeredTools.get(name).parameters
+    const schema = rt.teamTools.find(d => d.name === name).parameters
     assert.equal(schema.properties.avatar?.type, 'string')
     assert.match(schema.properties.avatar.description, /local image path.*data URL/)
   }

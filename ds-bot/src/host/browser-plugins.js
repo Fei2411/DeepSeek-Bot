@@ -134,6 +134,7 @@ export function install(rt) {
   mountBrowserPlugin(rt.ctx, {
     api: mounted,
     toolDefs: plugin.tools ?? plugin.toolDefs,
+    register: tool => rt.teamTools.push(tool),
     defineTool,
     profileRoot: join(rt.home, 'browser-profiles'),
     downloadRoot,

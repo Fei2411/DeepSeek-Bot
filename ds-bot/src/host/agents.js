@@ -2,7 +2,7 @@
 // them. Its Sessions are ordinary root Sessions in the DS Bot workspace, so they get
 // the whole dsh conversation surface and none of the team tools.
 import { randomUUID } from 'node:crypto'
-import { AGENT_NAME, AGENT_SESSION_TITLE_MAX, TEAM_TOOLS } from './constants.js'
+import { AGENT_NAME, AGENT_SESSION_TITLE_MAX } from './constants.js'
 
 export function install(rt) {
   const { ctx, state } = rt
@@ -18,60 +18,6 @@ export function install(rt) {
   }
   // The DSH Agent a Session belongs to; Bot and group Sessions get undefined.
   const agentOf = sessionId => state.agents[sessionIndex.get(sessionId)]
-
-  // A DSH Agent Session must not offer the team tools: its agent sees only the
-  // global dsh surface minus this plugin's registrations. A Session whose deny
-  // has not landed yet (schemas not up, restrict hook missing, a transient
-  // throw) stays on the retry list until it sticks or the Session leaves.
-  const restricted = new WeakSet()
-  const RETRY_MS = 5_000
-  const pendingRestrict = new Set()
-  let retryTimer
-  const stopRetry = () => {
-    if (retryTimer !== undefined) clearInterval(retryTimer)
-    retryTimer = undefined
-  }
-  ctx.effect(() => stopRetry, 'ds-bot: agent tool restrict retry')
-  const scheduleRetry = (agent) => {
-    pendingRestrict.add(agent)
-    if (retryTimer === undefined) {
-      retryTimer = setInterval(() => {
-        for (const waiting of [...pendingRestrict]) void restrictTeamTools(waiting)
-        if (pendingRestrict.size === 0) stopRetry()
-      }, RETRY_MS)
-      retryTimer.unref?.()
-    }
-  }
-  const restrictTeamTools = async (agent) => {
-    if (agent === undefined || restricted.has(agent)) return
-    if (agentOf(agent.session?.id) === undefined) {
-      pendingRestrict.delete(agent)
-      return
-    }
-    // Unknown names make restrict() throw, so only deny what this profile serves.
-    const known = new Set(ctx.tools.schemas(agent).map(schema => schema.name))
-    const deny = TEAM_TOOLS.filter(name => known.has(name))
-    // An empty list can mean the schemas are not up yet, and a missing restrict
-    // hook means the Agent is still being put together; both retry.
-    if (deny.length === 0 || typeof agent.ctx?.tools?.restrict !== 'function') {
-      scheduleRetry(agent)
-      return
-    }
-    try {
-      agent.ctx.tools.restrict({ deny })
-      restricted.add(agent)
-      pendingRestrict.delete(agent)
-    } catch (error) {
-      rt.warn('ds-bot: team tools stay visible to DSH Agent %s: %s', agent.session?.id, error)
-      scheduleRetry(agent)
-    }
-  }
-  // Fires when a root Session resolves its agent, including sessions saved earlier.
-  ctx.on('agent/created', ({ agent }) => {
-    void rt.load()
-      .then(() => restrictTeamTools(agent))
-      .catch(error => rt.warn('ds-bot: tool restrict on agent/created failed: %s', error))
-  })
 
   const writeCheck = () => {
     const readOnly = rt.readOnly()
@@ -94,8 +40,6 @@ export function install(rt) {
     const { sessionId } = await ctx.sessionController.create({ workspaceId: target })
     agent.sessions.push(sessionId)
     await rt.save()
-    // agent/created fired before the session joined the index, so restrict again now.
-    await restrictTeamTools(await rt.resolveAgent(sessionId))
     return sessionId
   }
 
@@ -112,7 +56,6 @@ export function install(rt) {
     if (owned) throw new Error('Session already belongs to the team')
     agent.sessions.push(sessionId)
     await rt.save()
-    await restrictTeamTools(await rt.resolveAgent(sessionId))
     return sessionId
   }
 

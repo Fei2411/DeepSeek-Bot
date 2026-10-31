@@ -3,9 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 import { ROOM_REPLY_TIMEOUT_MS } from '../src/host/constants.js'
+
+let rt
 
 // Chief in its own chat 'a'; Writer, the admin of group 'r1', speaks there from 'gb'.
 const seed = () => ({
@@ -61,14 +63,14 @@ async function start() {
   let route
   const register = ctx.connection.fetch.register
   ctx.connection.fetch.register = (options) => { route = options; return register(options) }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   let seq = 0
   const emit = (id, type, data) => {
     for (const listener of ctx.listeners.get('session/event') ?? []) {
       if (listener.length >= 2) listener({ id }, { type, seq: ++seq, data })
     }
   }
-  const tool = (name, args, sessionId, exec = {}) => ctx.registeredTools.get(name).execute(args, { agent: { id: sessionId }, ...exec })
+  const tool = (name, args, sessionId, exec = {}) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: sessionId }, ...exec })
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))).json()
   const askApproval = (sessionId, extra = {}, next = () => 'from-dsh') => ctx.listeners.get('approval/request')[0]({ agent: { session: { id: sessionId } }, toolName: 'pwsh', reason: 'escalate sandbox', ...extra }, next)
   const stop = async () => { await ctx.dispose(); rmSync(home, { recursive: true, force: true, maxRetries: 5 }) }

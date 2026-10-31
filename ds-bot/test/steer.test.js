@@ -46,6 +46,7 @@ const shellDef = (name = 'pwsh') => {
 
 const jobsService = (read) => ({ read })
 
+let rt
 const start = async ({ services = {}, def = shellDef() } = {}) => {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-steer-'))
   writeFileSync(join(home, 'state.json'), JSON.stringify(TEAM))
@@ -92,7 +93,7 @@ const start = async ({ services = {}, def = shellDef() } = {}) => {
   })
   const origGet = ctx.get
   Object.assign(ctx, { get: name => (name === 'agents' ? agentMap : origGet(name)) })
-  const rt = createRuntime(ctx, { home })
+  rt = createRuntime(ctx, { home })
   await rt.load?.()
   const origDeliver = rt.deliver
   rt.deliver = (...args) => { deliveries.push(args); return origDeliver ? origDeliver(...args) : Promise.resolve() }

@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 
+let rt
 function start(state, { config = {}, services } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-install-'))
   if (state) writeFileSync(join(home, 'state.json'), JSON.stringify(state))
@@ -16,7 +17,7 @@ function start(state, { config = {}, services } = {}) {
     route = options
     return register(options)
   }
-  const applyResult = apply(ctx, { home, ...config })
+  rt = createRuntime(ctx, { home, ...config })
   const call = async (endpoint, payload) => {
     const response = await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))
     return response.json()
@@ -25,14 +26,14 @@ function start(state, { config = {}, services } = {}) {
     await ctx.dispose()
     rmSync(home, { recursive: true, force: true, maxRetries: 5 })
   }
-  return { ctx, call, stop, applyResult }
+  return { ctx, call, stop, rt }
 }
 
-// Listeners run, and tools are listed, in the order they are registered.
-test('apply registers listeners, tools, and effects in a fixed order', (t) => {
-  const { ctx, stop, applyResult } = start()
+// Listeners run in registration order; the team tools are not in this list
+// because they are registered per Bot session scope, not globally.
+test('apply registers listeners and effects in a fixed order', (t) => {
+  const { ctx, stop } = start()
   t.after(stop)
-  assert.equal(applyResult, undefined)
   assert.deepEqual(ctx.calls, [
     'effect ds-bot: diagnostics log',
     'effect ds-bot: state lock',
@@ -42,37 +43,14 @@ test('apply registers listeners, tools, and effects in a fixed order', (t) => {
     'on session/event',
     'on session/event',
     'on tools/execute',
-    'effect ds-bot: agent tool restrict retry',
-    'on agent/created',
     'effect ds-bot: identity section',
     'prompt bot-identity 640',
     'on agent/pre-step (prepend)',
-    'tool list_bots',
-    'tool message_bot',
-    'tool stop_bot',
-    'tool create_bot',
-    'tool update_bot',
     'on tools/execute',
-    'tool list_bot_models',
-    'tool create_group',
-    'tool update_group',
-    'tool delete_group',
-    'tool post_to_group',
-    'tool ask_user',
-    // show_view is scoped per Bot agent, not a global registration.
-
     'tools guard',
     'on agent/created',
     'on session/event',
-    'tool list_capabilities',
-    'tool save_capability',
-    'tool delete_capability',
-    'tool attach_capability',
-    'tool detach_capability',
     'effect ds-bot: chat index',
-    'tool group_relay',
-    'tool read_own_chat',
-    'tool read_group_chat',
     'effect ds-bot: group step lines',
     'on llm/stream',
     'on approval/request (prepend)',
@@ -82,9 +60,6 @@ test('apply registers listeners, tools, and effects in a fixed order', (t) => {
     'effect ds-bot: memory recovery',
     'effect ds-bot: memory section',
     'prompt bot-memory 645',
-    'tool remember',
-    'tool forget',
-    'tool recall',
     'on agent/status',
     'effect ds-bot: memory review',
     'effect ds-bot: Bot compaction',
@@ -98,8 +73,6 @@ test('apply registers listeners, tools, and effects in a fixed order', (t) => {
     'on llm/stream',
     'on llm/stream',
     'on agent/status',
-    'tool request_secret',
-    'tool list_secrets',
     'on tools/execute',
     'on llm/stream',
     'effect ds-bot: load secrets',
@@ -201,10 +174,9 @@ const TEAM = {
 test('in the Desktop profile read_browser is the last tool and reads through the window', async (t) => {
   const { ctx, call, stop } = start(TEAM, { services: { profileContext: { name: 'desktop' } } })
   t.after(stop)
-  const tools = ctx.calls.filter(entry => entry.startsWith('tool '))
-  assert.equal(tools.at(-1), 'tool read_browser')
+  assert.equal(rt.teamTools.at(-1).name, 'read_browser')
   assert.ok(ctx.calls.indexOf('effect ds-bot: browser channel') < ctx.calls.indexOf('effect ds-bot: api route'))
-  const read = args => ctx.registeredTools.get('read_browser').execute(args, { agent: { id: 'b2' } })
+  const read = args => rt.teamTools.find(d => d.name === 'read_browser').execute(args, { agent: { id: 'b2' } })
 
   assert.match(await read({}), /browser panel is not open/)
   // A window reports Writer's page (and drops ids that are not Bots), then answers the read.
@@ -242,15 +214,15 @@ test('the desktop app has read_browser too; DSH Web does not', (t) => {
   t.after(() => { delete process.env.DS_BOT_APP })
   const app = start(TEAM, { services: { profileContext: { name: 'ds-bot' } } })
   t.after(app.stop)
-  assert.ok(app.ctx.calls.includes('tool read_browser'))
+  assert.ok(app.rt.teamTools.some(d => d.name === 'read_browser'))
   delete process.env.DS_BOT_APP
   const web = start(TEAM, { services: { profileContext: { name: 'web' } } })
   t.after(web.stop)
-  assert.ok(!web.ctx.calls.includes('tool read_browser'))
+  assert.ok(!web.rt.teamTools.some(d => d.name === 'read_browser'))
 })
 
 test('config.browser turns Bot browsers off even in the Desktop profile', (t) => {
-  const { ctx, stop } = start(TEAM, { config: { browser: false }, services: { profileContext: { name: 'desktop' } } })
+  const { stop } = start(TEAM, { config: { browser: false }, services: { profileContext: { name: 'desktop' } } })
   t.after(stop)
-  assert.ok(!ctx.calls.includes('tool read_browser'))
+  assert.ok(!rt.teamTools.some(d => d.name === 'read_browser'))
 })

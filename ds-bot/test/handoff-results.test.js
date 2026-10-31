@@ -6,10 +6,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 import { SOURCE_KIND } from '../src/host/constants.js'
 import { install as installHandoffs } from '../src/host/handoffs.js'
+
+let rt
 
 const seed = () => ({
   version: 1,
@@ -87,14 +89,14 @@ async function startHost(home, team) {
     route = options
     return register(options)
   }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   let seq = 0
   const emit = (id, type, data) => {
     for (const listener of ctx.listeners.get('session/event') ?? []) {
       if (listener.length >= 2) listener({ id }, { type, seq: ++seq, data })
     }
   }
-  const tool = (name, args, sessionId) => ctx.registeredTools.get(name).execute(args, { agent: { id: sessionId } })
+  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: sessionId } })
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', {
     method: 'POST', body: JSON.stringify({ endpoint, payload }),
   }))).json()

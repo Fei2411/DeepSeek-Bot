@@ -41,6 +41,7 @@ async function drain(stream) {
 // `ctx.llm.stream` runs the plugin's `llm/stream` listeners in order, as DSH does,
 // and then a route that turns down a request without a Session. `respond` gives the
 // text of each answer the route lets through.
+let rt
 function start() {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-session-identity-'))
   writeFileSync(join(home, 'state.json'), JSON.stringify(TEAM))
@@ -95,7 +96,7 @@ function start() {
     sessions: { messageProjections: [] },
     workspaceRegistry: { archiveSession: async () => {} },
   })
-  const rt = createRuntime(ctx, { home })
+  rt = createRuntime(ctx, { home })
   const hook = pattern => ctx.listeners.get('llm/stream').find(listener => pattern.test(String(listener)))
   const stop = async () => {
     await ctx.dispose()

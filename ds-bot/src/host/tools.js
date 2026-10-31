@@ -54,7 +54,7 @@ export function install(rt) {
   // Main Bots see every group; other Bots see the groups they are in.
   const visibleRooms = self => Object.values(state.rooms).filter(room => rt.isMain(self) || room.members.includes(self))
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'list_bots',
     description: 'List every Bot on the user\'s team with its role, what it does and what it is doing right now, and the group chats you can see.',
     parameters: {},
@@ -140,7 +140,7 @@ export function install(rt) {
   const calledInPosts = new Map()
   const turnOf = exec => rt.live.get(exec.agent?.id)?.turn
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'message_bot',
     description: 'Send a message to another Bot on the team. If that Bot is working, it reads your message at its next step and can change course, then answers once that work is done; if it is idle, it starts on it right away. Its reply arrives later as a new message to you; with reply_to "user" it answers the user in its own chat instead. In a group chat it reaches only members of that group, as writing "@Name" there does. With request_id you name the request yourself: a repeat of that name with the same message is not sent again, but gives the receipt of the first call back.',
     parameters: {
@@ -268,7 +268,7 @@ export function install(rt) {
     },
   }))
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'stop_bot',
     description: 'Main Bot only. Stop another Bot\'s running turn immediately — when it must not finish a dangerous action and a message_bot warning is not enough. Its queued messages are dropped with the turn. It is then told why in a new turn, whose reply comes back to you.',
     parameters: {
@@ -295,7 +295,7 @@ export function install(rt) {
     },
   }))
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'create_bot',
     description: 'Main Bot only. Create a new Bot on the user\'s team. It appears in the sidebar and greets the user.',
     parameters: {
@@ -330,7 +330,7 @@ export function install(rt) {
     },
   }))
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'update_bot',
     description: 'Change a Bot\'s name, role, color, profile picture, model, thinking level, working folder, or instructions. Every Bot may change itself; only a Main Bot may change another Bot.',
     parameters: {
@@ -405,7 +405,7 @@ export function install(rt) {
     return result
   })
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'list_bot_models',
     description: 'List the models a Bot can run on, as provider/model refs for create_bot and update_bot. A model in use also lists the thinking levels it serves.',
     parameters: {},
@@ -447,7 +447,7 @@ export function install(rt) {
     return { error: `No group chat called "${unquote(ref)}" that you can see. Groups: ${groupNames(self)}.` }
   }
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'create_group',
     description: 'Main Bot only. Create a group chat with the user and some Bots. You join it as its admin unless you name another member.',
     parameters: {
@@ -476,7 +476,7 @@ export function install(rt) {
     },
   }))
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'update_group',
     description: 'Change a group chat: rename it, set its notice, add or remove members, change its admin or reply mode. Main Bots may change any group; a group\'s admin may change its own group.',
     parameters: {
@@ -537,7 +537,7 @@ export function install(rt) {
     },
   }))
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'delete_group',
     description: 'Main Bot only. Delete a group chat; its history is archived. Only when the user asks.',
     parameters: { group: GROUP_REF },
@@ -554,7 +554,7 @@ export function install(rt) {
     },
   }))
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'post_to_group',
     description: 'Post a message into a group chat as yourself. A Main Bot may post into any group, any other Bot into a group it is in. A Main Bot\'s or the group admin\'s post starts a round: members reply in the group, where the user reads them. Another member\'s post calls only the members it names with "@Name"; without one it is only written into the group.',
     parameters: {
@@ -608,7 +608,7 @@ export function install(rt) {
     },
   }))
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'ask_user',
     description: 'Show the user a short multiple-choice question card in the chat (the user can also type their own answer). Calling it ends your turn; the chosen answer arrives later as the user\'s next message.',
     parameters: {
@@ -667,7 +667,7 @@ export function install(rt) {
 
   // Scoped per Bot session, not global: another plugin's global show_view serves
   // the sessions ds-bot does not own, while this one shadows it inside them.
-  const showViewTool = defineTool({
+  rt.teamTools.push(defineTool({
     name: 'show_view',
     description: showViewDescription({ where: 'your own chat' }),
     parameters: showViewParameters,
@@ -700,21 +700,34 @@ export function install(rt) {
       exec.concludeTurn?.()
       return 'The view is on screen; the user\'s answer arrives as their next message.'
     },
-  })
+  }))
 
-  // ds-bot registers show_view in the agent's own scope so it answers even in a
-  // group — where it only refuses — instead of a global registration falling to
-  // another plugin. Once per agent; the agent ctx carries the session.
+  // The team tools live in each Session's own scope, never in the global layer:
+  // a Bot's chat and a member's group Session get all of them, a group's own
+  // Session gets only its relay, and a Session ds-bot does not own gets none —
+  // so they never appear in a plain dsh conversation, and another plugin's
+  // same-named global tool can neither collide with them at boot nor shadow
+  // them inside these Sessions. Once per agent; the agent ctx carries the session.
   const scopedTools = new WeakSet()
   const shareBotTools = (agent) => {
-    if (agent === undefined || scopedTools.has(agent) || !rt.isBotSession(agent.session?.id)) return
+    if (agent === undefined || scopedTools.has(agent)) return
+    const id = agent.session?.id
+    const relayOnly = !rt.isBotSession(id) && rt.roomOf(id) !== undefined
+    if (!rt.isBotSession(id) && !relayOnly) return
     if (typeof agent.ctx?.tools?.register !== 'function') return
-    try {
-      agent.ctx.tools.register(showViewTool)
-      scopedTools.add(agent)
-    } catch (error) {
-      rt.warn('ds-bot: scoping show_view for %s failed: %s', agent.session?.id, error)
+    const failed = []
+    for (const def of rt.teamTools) {
+      if (relayOnly && def.name !== 'group_relay') continue
+      try {
+        agent.ctx.tools.register(def)
+      } catch (error) {
+        // A tool another plugin already scoped onto this agent stays missing
+        // rather than stopping the team; the rest still land.
+        failed.push(`${def.name}: ${error.message ?? error}`)
+      }
     }
+    scopedTools.add(agent)
+    if (failed.length > 0) rt.warn('ds-bot: team tools not served to %s: %s', agent.session?.id, failed.join('; '))
   }
 
   // dsh's own question tool holds the turn open until the user answers, and every
@@ -785,7 +798,7 @@ export function install(rt) {
     setTimeout(() => void blockGoal(id), 0)
   })
 
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'list_capabilities',
     description: 'List shared MCP servers, skills, and packs, plus the capabilities attached to you.',
     parameters: {},
@@ -809,7 +822,7 @@ export function install(rt) {
       return ['Shared capabilities:', ...lines].join('\n')
     },
   }))
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'save_capability',
     description: 'Create or update a shared MCP server, skill, or pack. Changes apply from your next message.',
     parameters: {
@@ -839,7 +852,7 @@ export function install(rt) {
       } catch (error) { return error.message }
     },
   }))
-  ctx.tools.register(defineTool({
+  rt.teamTools.push(defineTool({
     name: 'delete_capability',
     description: 'Remove a shared capability and detach it from every Bot and pack.',
     parameters: { name: { type: 'string', required: true } },
@@ -855,7 +868,7 @@ export function install(rt) {
     },
   }))
   for (const [name, endpoint, verb] of [['attach_capability', 'attach', 'Attached'], ['detach_capability', 'detach', 'Detached']]) {
-    ctx.tools.register(defineTool({
+    rt.teamTools.push(defineTool({
       name,
       description: `${verb} a shared capability to yourself, or to another Bot if you are a Main Bot.`,
       parameters: {

@@ -7,6 +7,8 @@ import { createRuntime } from '../index.js'
 import { SIDE_MARKER } from '../src/host/side.js'
 import { fakeContext } from './fake-ctx.js'
 
+let rt
+
 const user = text => ({ role: 'user', content: [{ type: 'text', text }] })
 const assistant = (...blocks) => ({ role: 'assistant', content: blocks })
 const call = (id, name = 'read') => ({ type: 'tool-call', id, name, arguments: '{}' })
@@ -174,7 +176,7 @@ async function setup({ state = team(), scripts = [], gate = false, messages, seq
   let route
   const register = ctx.connection.fetch.register
   ctx.connection.fetch.register = (options) => { route = options; return register(options) }
-  const rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
+  rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
   let notices = 0
   const saved = rt.stateSaved
   rt.stateSaved = () => { notices += 1; saved?.() }

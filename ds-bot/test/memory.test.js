@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import {
   MEMORY_LIMITS, addLink, cleanEntry, cleanTopic, formatEntry, insertEntry, looksLikeKey,
   looksSecret, matchEntries, parseAsk, parseMemory, parseReview, reviewEntries, removeLink, splitMeta, writtenIn,
@@ -121,6 +121,7 @@ const ownChat = [
 // of a Session, oldest first; each own chat has one user message, at seq 10, unless
 // it says otherwise. `requireSession` turns down a request without a Session, as
 // some routes do.
+let rt
 function start({ home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-')), replies = [], config = {}, history = {}, reasoning = { efforts: [{ id: 'off' }, { id: 'high' }] }, models = ['v4'], defaultModel, requireSession = false } = {}) {
   if (!existsSync(join(home, 'state.json'))) writeFileSync(join(home, 'state.json'), JSON.stringify(TEAM))
   const services = defaultModel === undefined ? {} : { agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: defaultModel }) } }
@@ -159,12 +160,12 @@ function start({ home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-')), replies =
     route = options
     return register(options)
   }
-  apply(ctx, { home, ...config })
+  rt = createRuntime(ctx, { home, ...config })
   const call = async (endpoint, payload) => {
     const response = await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))
     return response.json()
   }
-  const tool = (name, args, sessionId) => ctx.registeredTools.get(name).execute(args, { agent: { id: sessionId } })
+  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: sessionId } })
   const section = sessionId => ctx.sections.get('bot-memory').text({ agent: { id: sessionId } })
   const read = (...path) => readFileSync(join(home, 'memory', ...path), 'utf8')
   const journal = () => read('journal.jsonl').trim().split('\n').map(line => JSON.parse(line))
@@ -940,7 +941,7 @@ const postToGroup = async (ctx, texts) => {
     const event = { type: 'user/message', data: { source: { kind: 'bot', role: 'post', senderSessionId: 'b3', senderName: 'Coder' }, content: [{ type: 'text', text }] } }
     for (const listener of ctx.listeners.get('session/event')) listener({ id: 'r1' }, event)
   }
-  await ctx.registeredTools.get('group_relay').execute({}, { agent: { id: 'r1' }, callId: 'relay', signal: AbortSignal.abort() })
+  await rt.teamTools.find(d => d.name === 'group_relay').execute({}, { agent: { id: 'r1' }, callId: 'relay', signal: AbortSignal.abort() })
 }
 
 test('a queued review keeps the group lines that leave the log while it waits', async (t) => {

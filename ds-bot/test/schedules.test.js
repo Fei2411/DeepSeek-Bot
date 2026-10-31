@@ -7,6 +7,8 @@ import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 import { reminderText } from '../src/host/schedules.js'
 
+let rt
+
 const TEAM = {
   version: 1,
   mainBotIds: ['m1'],
@@ -60,7 +62,7 @@ function setup(services = {}) {
   const ctx = fakeContext({ services })
   const register = ctx.connection.fetch.register
   ctx.connection.fetch.register = (route) => { ctx.route = route; return register(route) }
-  const rt = createRuntime(ctx, { home })
+  rt = createRuntime(ctx, { home })
   const call = async (endpoint, payload) => (await ctx.route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))).json()
   return { ctx, home, call, rt }
 }

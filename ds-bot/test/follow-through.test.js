@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as realDelay } from 'node:timers/promises'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 import { stripWrittenCalls, writesToolCall } from '../src/host/turns.js'
 
@@ -27,6 +27,7 @@ const seed = () => ({
 
 // One DS Bot host on `home`; a second start on the same home is a restart.
 // Hosts by home: a home is removed only after its hosts stopped and their writes landed.
+let rt
 const started = new Map()
 
 // The durable logs DSH keeps, by Session: what a Session's turns did and said.
@@ -58,14 +59,14 @@ async function start(home, logs, inspect) {
   let route
   const register = ctx.connection.fetch.register
   ctx.connection.fetch.register = (options) => { route = options; return register(options) }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   let seq = 0
   const emit = (id, type, data) => {
     for (const listener of ctx.listeners.get('session/event') ?? []) {
       if (listener.length >= 2) listener({ id }, { type, seq: ++seq, data })
     }
   }
-  const tool = (name, args, sessionId, exec = {}) => ctx.registeredTools.get(name).execute(args, { agent: { id: sessionId }, ...exec })
+  const tool = (name, args, sessionId, exec = {}) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: sessionId }, ...exec })
   const askApproval = sessionId => ctx.listeners.get('approval/request')[0]({ agent: { session: { id: sessionId } }, toolName: 'pwsh', reason: 'escalate sandbox' }, () => 'from-dsh')
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))).json()
   await tool('list_bots', {}, 'a')

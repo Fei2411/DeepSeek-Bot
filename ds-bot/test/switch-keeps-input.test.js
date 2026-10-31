@@ -6,6 +6,8 @@ import { test } from 'node:test'
 import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 
+let rt
+
 // #280: a switch that fails while the plugin is being unloaded must not lose the input
 // it carried — a turn's claimed messages and whatever the old part held. The old
 // part's durable inbox keeps them (the fake persists it across starts), a switch is
@@ -148,11 +150,11 @@ async function start({ fail = {}, services = {}, home: reuse } = {}) {
     route = options
     return register(options)
   }
-  const rt = createRuntime(ctx, { home })
+  rt = createRuntime(ctx, { home })
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', {
     method: 'POST', body: JSON.stringify({ endpoint, payload }),
   }))).json()
-  const tool = (name, args, sessionId) => ctx.registeredTools.get(name).execute(args, { agent: agentOf(sessionId), name, callId: 'c1' })
+  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: agentOf(sessionId), name, callId: 'c1' })
   const preStep = (sessionId, messages = [], step = 1) => ctx.listeners.get('agent/pre-step').at(-1)(
     { agent: agentOf(sessionId), messages, step, signal: AbortSignal.timeout(60_000) }, async () => 'next')
   const state = () => JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'))

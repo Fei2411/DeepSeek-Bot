@@ -3,8 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
+
+let rt
 
 const TEAM = {
   version: 1,
@@ -38,14 +40,14 @@ async function start() {
     route = options
     return register(options)
   }
-  apply(ctx, { home })
+  rt = createRuntime(ctx, { home })
   let seq = 0
   const emit = (id, type, data) => {
     for (const listener of ctx.listeners.get('session/event') ?? []) {
       if (listener.length >= 2) listener({ id }, { type, seq: ++seq, data })
     }
   }
-  const ask = (sessionId, callId) => ctx.registeredTools.get('ask_user').execute(
+  const ask = (sessionId, callId) => rt.teamTools.find(d => d.name === 'ask_user').execute(
     { question: 'Which name?', options: [{ label: 'Lookout' }, { label: 'Scout' }] },
     { agent: { id: sessionId }, callId, concludeTurn() {} },
   )
@@ -53,7 +55,7 @@ async function start() {
     method: 'POST', body: JSON.stringify({ endpoint: 'state', payload: {} }),
   }))).json()).value.questions
   // Loading once fills the Session-owner indexes turns.js filters events by.
-  await ctx.registeredTools.get('list_bots').execute({}, { agent: { id: 'chief' } })
+  await rt.teamTools.find(d => d.name === 'list_bots').execute({}, { agent: { id: 'chief' } })
   return { emit, ask, questions, stop: async () => { await ctx.dispose(); rmSync(home, { recursive: true, force: true, maxRetries: 5 }) } }
 }
 
