@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import { apply } from '../index.js'
 import { dshHomeOf } from '../src/host/folders.js'
 import { escapeRegExp } from '../src/host/text.js'
-import { fakeContext } from './fake-ctx.js'
+import { fakeApproval, fakeContext } from './fake-ctx.js'
 
 // A Main Bot and a Bot, with the Bot in the group Ops through its group Session 'gb'.
 const TEAM = {
@@ -30,9 +30,10 @@ const TEAM = {
 // starts in the team workspace unless it is made with a cwd. `services` are what
 // ctx.get finds, such as the sandbox policy and approvals.
 // `locked`: another dsh holds the team, so this one only shows it.
-async function start({ services = {}, workspaces = [], llm, team: saved = TEAM, locked = false } = {}) {
+async function start({ services = {}, workspaces = [], llm, team: saved = TEAM, locked = false, root: rootDir } = {}) {
   // The native realpath, as fs/promises uses: on Windows the JS one keeps 8.3 short names.
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'ds-bot-work-dir-')))
+  const root = rootDir ?? realpathSync.native(mkdtempSync(join(tmpdir(), 'ds-bot-work-dir-')))
+  mkdirSync(root, { recursive: true })
   const dsh = join(root, 'dsh')
   const home = join(dsh, 'bot')
   const team = join(home, 'workspace')
@@ -633,6 +634,71 @@ test('the team workspace holds no DeepSeek Harness data, apart from the plugin\'
   symlinkSync(join(dsh, 'profiles'), team, process.platform === 'win32' ? 'junction' : 'dir')
   assert.match(await error(team), /holds DeepSeek Harness data/)
   assert.equal(state().workspaceId, 'w-new')
+})
+
+// #508: older profiles, imports and DS_BOT_USER_DSH_HOME can leave a workspace that
+// contains a data root; the workspace exception must not open that root's folders.
+test('a team workspace that holds the data still keeps Bots out of it', async (t) => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'ds-bot-work-dir-')))
+  const { dsh, home, project, state, call, tool, stop } = await start({
+    root,
+    workspaces: [{ id: 'w9', path: root, title: 'root' }],
+    team: { ...TEAM, workspaceId: 'w9' },
+  })
+  t.after(stop)
+  mkdirSync(join(dsh, 'profiles'))
+  const error = async workDir => (await call('update-bot', { id: 'b', workDir })).error?.message
+  for (const guarded of [dsh, join(dsh, 'profiles'), home, join(home, 'memory')]) {
+    mkdirSync(guarded, { recursive: true })
+    assert.equal(await error(guarded), `${guarded} holds DeepSeek Harness data, so Bots cannot work there`)
+  }
+  // An ordinary folder in the same workspace is still fine.
+  assert.equal((await call('update-bot', { id: 'b', workDir: project })).value.workDir, project)
+  assert.equal(state().bots.b.workDir, project)
+  // Nor can a photo be read out of the data root into the team.
+  writeFileSync(join(dsh, 'profiles', 'pic.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  const pic = join(dsh, 'profiles', 'pic.png')
+  assert.equal(await tool('update_bot', { avatar: pic }, 'b'), `Could not update the Bot: ${pic} is in DeepSeek Harness data, so it cannot be a Bot's photo. Pass an image from another folder.`)
+})
+
+// #508: the exception covers a workspace lying inside a data root, not one equal to
+// it: a workspace that is DSH's home or the team's own data opens every folder in it.
+test('a team workspace that is a data root still keeps Bots out of it', async (t) => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  for (const name of ['dsh', 'bot']) {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'ds-bot-work-dir-')))
+    const at = name === 'dsh' ? join(root, 'dsh') : join(root, 'dsh', 'bot')
+    const env = await start({
+      root,
+      workspaces: [{ id: 'w9', path: at, title: name }],
+      team: { ...TEAM, workspaceId: 'w9' },
+    })
+    t.after(env.stop)
+    const error = async workDir => (await env.call('update-bot', { id: 'b', workDir })).error?.message
+    for (const guarded of [join(env.dsh, 'profiles'), join(env.home, 'memory')]) {
+      mkdirSync(guarded, { recursive: true })
+      assert.equal(await error(guarded), `${guarded} holds DeepSeek Harness data, so Bots cannot work there`)
+    }
+    writeFileSync(join(env.dsh, 'profiles', 'pic.png'), PNG)
+    const pic = join(env.dsh, 'profiles', 'pic.png')
+    assert.equal(await env.tool('update_bot', { avatar: pic }, 'b'), `Could not update the Bot: ${pic} is in DeepSeek Harness data, so it cannot be a Bot's photo. Pass an image from another folder.`)
+  }
+})
+
+// #508: with no sandbox policy service a folder outside the workspace asked nobody.
+test('a folder outside the workspace asks for approval, or throws when nobody can be asked', async (t) => {
+  const first = await start()
+  t.after(first.stop)
+  assert.equal(await first.tool('update_bot', { work_dir: first.project }, 'b'),
+    `Could not update the Bot: Working in ${first.project} needs the user's approval, and there is no way to ask for it here, so nothing changed. The user can make this change in the settings.`)
+  assert.equal(first.state().bots.b.workDir, undefined)
+
+  const approval = fakeApproval()
+  const second = await start({ services: { approval } })
+  t.after(second.stop)
+  assert.equal(await second.tool('update_bot', { work_dir: second.project }, 'b'), `Updated Writer. From your next step on, you work in ${second.project}.`)
+  assert.equal(approval.requests.length, 1)
+  assert.equal(approval.requests[0].reason, `Let Writer work in ${second.project}? Files there can then be changed.`)
 })
 
 test('a copied team shows its default team workspace before the workspace is registered', async (t) => {
