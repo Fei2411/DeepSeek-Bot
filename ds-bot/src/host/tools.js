@@ -320,8 +320,8 @@ export function install(rt) {
         // Without a named model the new Bot takes its creator's: the DSH default may be
         // a provider that has no key, and then the new Bot fails on its first reply.
         const creator = callerBot(exec)
-        const served = creator?.model && (await rt.catalog()).some(entry => entry.ref === creator.model)
-        const model = args.model || (served ? creator.model : undefined)
+        const usable = creator?.model && (await rt.catalog()).some(entry => entry.ref === creator.model && !entry.needsKey)
+        const model = args.model || (usable ? creator.model : undefined)
         const bot = await rt.createBot({ ...args, avatar: avatar === undefined ? undefined : { image: avatar }, model, workDir, effort: args.effort, createdBy: creator?.id })
         return `Created ${bot.name}${workDir ? `, working in ${workDir}` : ''}. It is greeting the user now.`
       } catch (error) {

@@ -67,6 +67,7 @@ export const CalendarIcon = lineIcon(['M5.5 5h9A1.5 1.5 0 0 1 16 6.5v8a1.5 1.5 0
 export const ConnectorIcon = lineIcon(['M7 10a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z', 'M18 10a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z', 'M7 10h6'])
 export const SwitchIcon = lineIcon(['M4 7h9.5M10.5 3.5L14 7l-3.5 3.5', 'M16 13H6.5M9.5 9.5L6 13l3.5 3.5'])
 export const SignOutIcon = lineIcon(['M8.5 17H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h2.5', 'M10 10h6.5', 'M13.5 7l3 3-3 3'])
+export const SignInIcon = lineIcon(['M11.5 3H14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2.5', 'M3.5 10H10', 'M7 7l3 3-3 3'])
 export const PaperclipIcon = lineIcon(['M15.5 9.5l-5.6 5.6a3.4 3.4 0 0 1-4.8-4.8l6.1-6.1a2.25 2.25 0 0 1 3.2 3.2l-6 6a1.1 1.1 0 0 1-1.6-1.6l5.5-5.5'])
 export const ClockIcon = lineIcon(['M10 3.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13z', 'M10 6.5V10l2.5 1.5'])
 // Six broad, shallow teeth around a wide hub: it reads as a gear even at 15px.

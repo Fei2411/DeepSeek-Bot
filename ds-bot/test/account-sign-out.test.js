@@ -162,6 +162,34 @@ test('cancel closes the confirm without signing out', async () => {
   assert.deepEqual(side.calls, ['hasRunningAccountTasks'])
 })
 
+test('Models and API keys opens DS Bot\'s Models page, or DSH\'s own where the host serves no providers', () => {
+  const opened = []
+  const page = launcher({ actions: { providers: () => {}, openModels: () => opened.push('models'), openHarnessModels: () => opened.push('harness') } })
+  page.item(page.open(), 'Models and API keys').props.onClick()
+  const shell = launcher({ actions: { openHarnessModels: () => opened.push('harness') } })
+  shell.item(shell.open(), 'Models and API keys').props.onClick()
+  assert.deepEqual(opened, ['models', 'harness'])
+  const none = launcher()
+  assert.equal(none.item(none.open(), 'Models and API keys'), undefined)
+})
+
+test('Sign in to DeepSeek shows only while the account plugin says signed out', () => {
+  const signIns = []
+  const actions = { signIn: () => signIns.push('signIn') }
+  const out = launcher({ status: 'signed-out', actions })
+  const item = out.item(out.open(), 'Sign in to DeepSeek')
+  assert.ok(item !== undefined)
+  item.props.onClick()
+  assert.deepEqual(signIns, ['signIn'])
+  const inside = launcher({ actions })
+  assert.equal(inside.item(inside.open(), 'Sign in to DeepSeek'), undefined)
+  // An account snapshot that has not answered yet is no sign-out.
+  const loading = launcher({ status: undefined, actions })
+  assert.equal(loading.item(loading.open(), 'Sign in to DeepSeek'), undefined)
+  const entryless = launcher({ status: 'signed-out', withEntry: false, actions })
+  assert.equal(entryless.item(entryless.open(), 'Sign in to DeepSeek'), undefined)
+})
+
 // #452: the Connect plugins button left the Bot footer; the account menu that
 // stays keeps the way into the connectors and the automation panel.
 test('the account menu opens the connectors and the automation panel', () => {

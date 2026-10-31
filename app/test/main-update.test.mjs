@@ -5,7 +5,7 @@ import { before, test } from 'node:test'
 import { app, state } from './helpers/fake-electron.mjs'
 import { state as hostState } from './helpers/fake-host-process.mjs'
 import { state as updaterState, updater } from './helpers/fake-updater.mjs'
-import { startApp, trayMenu, waitFor, window } from './helpers/app-harness.mjs'
+import { handOff, startApp, trayMenu, waitFor, window } from './helpers/app-harness.mjs'
 import { installHooks } from './helpers/register.mjs'
 
 await installHooks()
@@ -16,11 +16,12 @@ Object.defineProperty(process, 'platform', { value: 'win32' })
 before(async () => { await startApp() })
 
 test('the update waits for the window and is installed when the window comes back', async () => {
-  await waitFor(() => state.windows.length > 0, 'open the window')
+  await waitFor(() => window() !== undefined, 'open the window')
   await waitFor(() => state.tray !== undefined, 'build the tray')
   const win = window()
   hostState.release()
-  await waitFor(() => win.visible === true, 'show the window')
+  // The team view is ready: the start window hands over to the team window.
+  await handOff()
   // The window goes away, and the update is downloaded while it is gone.
   win.close()
   await waitFor(() => win.visible === false, 'hide the window')

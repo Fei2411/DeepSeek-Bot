@@ -495,6 +495,7 @@ body[data-ds-dark-theme] .bt-scrim{background:rgba(0,0,0,.5)}
 .bt-settings-nav>.bt-thumb{left:8px;right:8px;border-radius:8px;background:var(--bt-active)}
 .bt-settings-nav[data-glide] .bt-settings-item[aria-current=page]{background:transparent}
 .bt-settings-shell{margin-top:auto}
+.bt-settings-item>svg{flex:none}
 /* Usage while another page is open: out of the flow, so it keeps its layout, and not
    rendered. */
 .bt-settings-usage[data-off]{position:absolute;top:0;left:198px;width:calc(var(--bt-set-w) - 198px);height:100%;box-sizing:border-box;content-visibility:hidden;pointer-events:none}

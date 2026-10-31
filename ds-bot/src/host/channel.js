@@ -42,7 +42,8 @@ export function install(rt) {
     mainBotId: state.mainBotIds[0] ?? null,
     mainBotIds: state.mainBotIds,
     // `sessionId` is the Bot's current own-chat part; `parts` its earlier ones.
-    // `waiting`: the Bot holds its greeting until the user picks its model.
+    // `waiting`: the Bot holds its greeting until the user picks its model or fixes
+    // what failed it. `blocked`: the facts of a failure only the user can fix (turns.js).
     bots: Object.values(state.bots).map(({ segments, kickoff, ...bot }) => ({
       ...bot, sessionId: rt.chatOf(bot.id), parts: (segments ?? []).map(segment => segment.sessionId), ...(kickoff ? { waiting: true } : {}),
     })),
@@ -236,6 +237,14 @@ export function install(rt) {
         case 'update-bot':
           await rt.load()
           return ok(await rt.updateBot(body.id, body))
+        // The repair card's Retry, once the user fixed what failed the Bot's turn.
+        case 'resume': {
+          await rt.load()
+          const bot = rt.botOf(String(body.botId ?? ''))
+          if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
+          await rt.resumeBot(bot)
+          return ok(true)
+        }
         // The avatar library: photos the user imported once, kept beside the team.
         case 'avatar-library':
           await rt.load()

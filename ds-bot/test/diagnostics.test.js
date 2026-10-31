@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { cleanText, install as installDiagnostics, reportMarkdown } from '../src/host/diagnostics.js'
-import { failureLine, install as installTurns, turnFailure } from '../src/host/turns.js'
+import { BLOCKING_CODES, failureLine, install as installTurns, turnFailure } from '../src/host/turns.js'
 import { errorCode } from '../src/host/channel.js'
 import { SOURCE_KIND } from '../src/host/constants.js'
 
@@ -224,11 +224,11 @@ function turnsHost() {
     noteFailure: entry => noted.push(entry),
     warn() {},
     switchJobs: () => [],
-    dropKickoff() {},
+    userWrote() {},
   }
   installTurns(rt)
   let seq = 0
-  const emit = (id, type, data) => listener({ id }, { type, seq: ++seq, data })
+  const emit = (id, type, data, session = { id }) => listener(session, { type, seq: ++seq, data })
   return { rt, emit, delivered, noted }
 }
 
@@ -261,6 +261,135 @@ test('a failed group turn fails its waiter; a stopped one counts as no answer', 
   emit('b', 'user/message', { content: [], source: { kind: SOURCE_KIND, role: 'room', exchangeId: 'r2' } })
   emit('b', 'turn/end', { turn: 2, reason: { kind: 'aborted', reason: { kind: 'user' } } })
   assert.equal(value, null)
+})
+
+// The failures the repair card is for, as the client reads them from `bot.blocked`.
+test('the failures that block a Bot are the ones only the user can fix', () => {
+  assert.deepEqual([...BLOCKING_CODES], ['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH', 'QUOTA', 'ACCOUNT_QUOTA', 'ACCOUNT_SIGN_IN_REQUIRED', 'ACCOUNT_SIGNED_OUT', 'ACCOUNT_TOKEN_INVALID'])
+})
+
+test('a failure only the user can fix blocks its Bot with the facts, never the message, until a turn completes', () => {
+  const { rt, emit } = turnsHost()
+  const fail = (turn, error, session) => {
+    emit('b', 'turn/start', { turn }, session)
+    emit('b', 'turn/end', { turn, reason: { kind: 'error', error } }, session)
+  }
+  rt.bots.b.appliedModel = 'deepseek-official/deepseek-v4-flash'
+  fail(1, { code: 'AUTH', message: 'bad key sk-12***34', status: 401, requestId: 'r1' })
+  const { at, ...facts } = rt.bots.b.blocked
+  assert.deepEqual(facts, { code: 'AUTH', status: 401, requestId: 'r1', provider: 'deepseek-official' })
+  assert.equal(typeof at, 'number')
+  // The route of the request that failed names the provider.
+  const account = { id: 'b', requestHeader: () => ({ config: { provider: 'deepseek-account', model: 'deepseek-v4-flash' } }) }
+  fail(2, { code: 'ACCOUNT_TOKEN_INVALID', message: '' }, account)
+  assert.deepEqual(Object.keys(rt.bots.b.blocked), ['code', 'provider', 'at'])
+  assert.equal(rt.bots.b.blocked.provider, 'deepseek-account')
+  // A failure a retry can fix, or a stopped turn, leaves the block as it is.
+  fail(3, { code: 'SERVER', message: 'busy', status: 503 })
+  emit('b', 'turn/start', { turn: 4 })
+  emit('b', 'turn/end', { turn: 4, reason: { kind: 'aborted', reason: { kind: 'user' } } })
+  assert.equal(rt.bots.b.blocked.code, 'ACCOUNT_TOKEN_INVALID')
+  emit('b', 'turn/start', { turn: 5 })
+  emit('b', 'turn/end', { turn: 5, reason: { kind: 'completed' } })
+  assert.equal(rt.bots.b.blocked, undefined)
+})
+
+test('a greeting a key, a sign-in or a balance stopped is held again; one that failed otherwise is not', () => {
+  const { rt, emit } = turnsHost()
+  const held = []
+  rt.chatOwners.set('b', 'b')
+  rt.holdKickoffAgain = id => held.push(id)
+  rt.userAnswered = () => {}
+  const greet = (turn, error) => {
+    emit('b', 'turn/start', { turn })
+    emit('b', 'user/message', { content: [{ type: 'text', text: '[Bot team setup]\nhi' }], source: { kind: SOURCE_KIND, role: 'kickoff', exchangeId: `k${turn}` } })
+    emit('b', 'turn/end', { turn, reason: { kind: 'error', error } })
+  }
+  greet(1, { code: 'QUOTA', message: 'Insufficient Balance', status: 402 })
+  greet(2, { code: 'SERVER', message: 'busy', status: 503 })
+  assert.deepEqual(held, ['b'])
+})
+
+test('a completed turn the user opened, or a Retry, answers the message a greeting was held for', () => {
+  const { rt, emit } = turnsHost()
+  const answered = []
+  rt.chatOwners.set('b', 'b')
+  rt.userAnswered = id => answered.push(id)
+  const run = (turn, source) => {
+    emit('b', 'turn/start', { turn })
+    emit('b', 'user/message', { content: [{ type: 'text', text: 'hi' }], source })
+    emit('b', 'turn/end', { turn, reason: { kind: 'completed' } })
+  }
+  run(1, { kind: 'user' })
+  run(2, { kind: SOURCE_KIND, role: 'request', senderSessionId: 'a', exchangeId: 'x1' })
+  run(3, { kind: SOURCE_KIND, role: 'continue', exchangeId: 'c1' })
+  assert.deepEqual(answered, ['b', 'b'])
+})
+
+test('a key lifts the key failures of the providers that read it, a sign-in the account ones, nothing a balance', () => {
+  const { rt } = turnsHost()
+  const blocked = {
+    official: { code: 'AUTH', provider: 'deepseek-official' },
+    stepfun: { code: 'MISSING_CREDENTIAL', provider: 'stepfun' },
+    unknown: { code: 'INVALID_CREDENTIAL' },
+    keyless: { code: 'AUTH', provider: 'ollama' },
+    account: { code: 'ACCOUNT_TOKEN_INVALID', provider: 'deepseek-account' },
+    lapsed: { code: 'ACCOUNT_SIGNED_OUT', provider: 'deepseek-account' },
+    balance: { code: 'QUOTA', provider: 'deepseek-official' },
+    accountBalance: { code: 'ACCOUNT_QUOTA', provider: 'deepseek-account' },
+  }
+  const reset = () => {
+    rt.state.bots = Object.fromEntries(Object.entries(blocked).map(([id, facts]) => [id, { id, name: id, blocked: { ...facts, at: 1 } }]))
+  }
+  const released = []
+  rt.releaseKickoff = async (bot) => { released.push(bot.id); return false }
+  rt.keyRefs = () => new Map([['deepseek-official', 'DEEPSEEK_API_KEY'], ['stepfun', 'STEPFUN_API_KEY']])
+  const still = () => Object.values(rt.state.bots).filter(bot => bot.blocked !== undefined).map(bot => bot.id)
+
+  reset()
+  rt.unblockBots({ ref: 'DEEPSEEK_API_KEY' })
+  assert.deepEqual(released, ['official', 'unknown', 'keyless'])
+  assert.deepEqual(still(), ['stepfun', 'account', 'lapsed', 'balance', 'accountBalance'])
+
+  released.length = 0
+  reset()
+  rt.unblockBots({ signedIn: true })
+  assert.deepEqual(released, ['account', 'lapsed'])
+
+  // With no provider map to read, any key may be the fix.
+  released.length = 0
+  reset()
+  rt.keyRefs = () => { throw new Error('no settings') }
+  rt.unblockBots({ ref: 'DEEPSEEK_API_KEY' })
+  assert.deepEqual(released, ['official', 'stepfun', 'unknown', 'keyless'])
+
+  // A provider listed with its key again lifts only what its missing key blocked.
+  released.length = 0
+  reset()
+  rt.unblockBots({ keyed: new Set(['stepfun', 'deepseek-official', 'ollama']) })
+  assert.deepEqual(released, ['stepfun'])
+
+  released.length = 0
+  reset()
+  rt.unblockBots()
+  assert.deepEqual(released, [])
+  assert.equal(still().length, Object.keys(blocked).length)
+})
+
+test('Retry adds no turn while a greeting is on its way or a turn runs in the Bot\'s chat', async () => {
+  const { rt, emit, delivered } = turnsHost()
+  rt.chatOf = id => id
+  rt.releaseKickoff = async () => false
+  let out = true
+  rt.greetingOut = () => out
+  await rt.resumeBot(rt.bots.b)
+  out = false
+  emit('b', 'turn/start', { turn: 1 })
+  await rt.resumeBot(rt.bots.b)
+  assert.equal(delivered.length, 0)
+  emit('b', 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await rt.resumeBot(rt.bots.b)
+  assert.deepEqual(delivered.map(args => args.role), ['continue'])
 })
 
 test('issueUrl fills the issue form, keeps the versions when the errors are too long, and falls back to the clipboard', async () => {

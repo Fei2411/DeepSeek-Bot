@@ -210,7 +210,7 @@ export function ModelChoiceDock({ sessionId, useRoster, actions }) {
   const lost = bot.model ? !models.some(model => model.ref === bot.model) : false
   // An unknown catalog (none listed) cannot tell a lost model from a slow provider.
   if (bot.model && (!lost || models.length === 0)) return null
-  // A window without DSH's own settings takes the missing key here.
+  // The missing key is taken here, through the host.
   const keyFor = usable.length === 0 && actions.setProviderKey ? models.find(model => model.needsKey) : undefined
   const manage = manageModels(actions)
   const pick = (ref) => {
@@ -253,9 +253,11 @@ export function ModelChoiceDock({ sessionId, useRoster, actions }) {
     error ? h('div', { className: 'bt-secret-error bt-model-error', role: 'alert' }, error) : null)
 }
 
+const DEEPSEEK_KEYS_URL = 'https://platform.deepseek.com/api_keys'
+
 // The provider's API key, saved through the host; once it is set, the provider's
-// models become the choices.
-function ModelKeyCard({ model, actions }) {
+// models become the choices. `onSaved` runs once the host took the key.
+export function ModelKeyCard({ model, actions, onSaved }) {
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -266,29 +268,33 @@ function ModelKeyCard({ model, actions }) {
     setBusy(true)
     setError('')
     void Promise.resolve(actions.setProviderKey(model.provider, value))
-      .then(() => setValue(''), failure => setError(hostText(failure?.message ?? String(failure))))
+      .then(() => { setValue(''); onSaved?.() }, failure => setError(hostText(failure?.message ?? String(failure))))
       .finally(() => setBusy(false))
   }
+  const official = model.provider === 'deepseek-official'
   return h('div', { className: 'bt-q bt-model-key', role: 'group', 'aria-label': label },
     h('div', { className: 'bt-model-key-title' }, h(KeyIcon), label),
     h('label', { className: 'bt-q-field bt-secret-field' }, h(MaskedInput, { value, onChange: setValue, onEnter: save, label, autoFocus: true })),
+    official ? h('div', { className: 'bt-model-key-help' },
+      h('a', { className: 'bt-model-key-link', href: DEEPSEEK_KEYS_URL, target: '_blank', rel: 'noopener noreferrer' }, t('Create a key on the DeepSeek platform ↗')),
+      h('span', { className: 'bt-model-key-note' }, t('The API is billed by usage; the account needs a balance first.'))) : null,
     error ? h('div', { className: 'bt-secret-error', role: 'alert' }, error) : null,
     h('div', { className: 'bt-q-foot' },
       actions.openModels ? h('button', { type: 'button', className: 'bt-q-btn bt-model-key-other', onClick: actions.openModels }, t('Another provider')) : null,
       h('button', { type: 'button', className: 'bt-q-submit', disabled: !ready, onClick: save }, busy ? t('Saving…') : t('Save'))))
 }
 
-// Where the providers are set up: the window's own Models page, else DSH's settings.
-const manageModels = actions => actions.openModels ?? actions.openHarnessSettings
+// Where the providers are set up: DS Bot's Models page, else DSH's own.
+export const manageModels = actions => actions.openModels ?? actions.openHarnessModels ?? actions.openHarnessSettings
 
 // Ways to get a first model. The DeepSeek sign-in exists only where the shell carries
-// its account plugin (the Desktop); the API key and custom models use the shell's
-// own editors.
+// its account plugin; the API key uses the shell's own editor.
 function setupChoices(actions) {
+  const custom = manageModels(actions)
   return [
     actions.canSignIn?.() ? [t('Sign in to DeepSeek'), () => actions.signIn()] : null,
     actions.openHarnessOnboarding ? [t('Enter a DeepSeek API key'), () => actions.openHarnessOnboarding('deepseek-official')] : null,
-    actions.openHarnessSettings ? [t('Open settings to set up a custom model'), actions.openHarnessSettings] : null,
+    custom ? [t('Open settings to set up a custom model'), () => custom()] : null,
   ].filter(Boolean)
 }
 
@@ -350,6 +356,10 @@ export const MODEL_CSS = `
 .bt-model-key-title{display:flex;align-items:center;gap:6px;font-size:13px;line-height:18px;font-weight:500;color:var(--bt-ink-2)}
 .bt-model-key-title svg{flex:none;width:16px;height:16px}
 .bt-model-key .bt-q-foot{margin-top:2px}
+.bt-model-key-help{display:flex;flex-direction:column;gap:2px;font-size:12px;line-height:17px;color:var(--bt-ink-2)}
+.bt-model-key-link{align-self:flex-start;color:var(--bt-ink);text-decoration:underline;text-decoration-color:var(--bt-line-2);text-underline-offset:2px}
+.bt-model-key-link:hover{text-decoration-color:currentColor}
+.bt-model-key-link:focus-visible{outline:2px solid var(--bt-accent);outline-offset:1px;border-radius:4px}
 .bt-model-key-other{margin-right:auto}
 @keyframes bt-model-in{from{opacity:0;transform:translateY(6px)}}
 .bt-model-spin{flex:none;width:14px;height:14px;border-radius:50%;border:1.5px solid var(--bt-line-2);border-top-color:var(--bt-ink-2);animation:bt-model-spin .7s linear infinite}

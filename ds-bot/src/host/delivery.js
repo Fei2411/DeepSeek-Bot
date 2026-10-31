@@ -28,6 +28,7 @@ export function install(rt) {
     if (role === 'room') return `[Group chat "${roomName}" · ${note}]`
     if (role === 'report') return `[Group chat "${roomName}" · replies to your post${goesOn}]`
     if (role === 'kickoff') return '[Bot team setup]'
+    if (role === 'continue') return '[Retry after a failed turn]'
     // The editor can be the user or a Bot (its own tool call, or a Main Bot's):
     // the header stays neutral about who changed the profile.
     if (role === 'update') return '[Your profile was updated — follow the latest version]'

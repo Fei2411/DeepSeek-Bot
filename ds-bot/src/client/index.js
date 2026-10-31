@@ -7,7 +7,7 @@ import { themeCss, shellTokens, registry, registerShape, registerTheme, allTheme
 import { MENTION_ORIGIN, currentPart } from './text.js'
 import { SHELL_CSS, CONVERSATION_CSS, installStyles, installCompiledStyles } from './styles.js'
 import { lookOf } from './mark.js'
-import { TeamSidebar, YouAvatar, AccountLauncher, FooterAccount, BrandMark, BrandName, BotReturn, SIDEBAR_CSS, RETURN_CSS, holdShellShortcuts, openHarnessOnboarding, openHarnessSettings } from './sidebar.js'
+import { TeamSidebar, YouAvatar, AccountLauncher, FooterAccount, BrandMark, BrandName, BotReturn, SIDEBAR_CSS, RETURN_CSS, holdShellShortcuts, openHarnessOnboarding, openHarnessSettings, MODELS_STEP, MODELS_STEP_ORDER, OpenModelsStep } from './sidebar.js'
 import { frameLayout, readSidebar, writeSidebar, toggledPref, DSH_NARROW } from './frame-layout.js'
 import { installFrameWatch } from './frame-watch.js'
 import { HeaderPill } from './header.js'
@@ -22,6 +22,7 @@ import { AnsweredReply, WidgetDock, WIDGET_CSS } from './widget-cell.js'
 import { HandoffDock, HANDOFF_CSS } from './handoff-card.js'
 import { installHeaderNavigation } from './header-navigation.js'
 import { AssistantCell, TriggerCell, TurnProcessCell, Nothing, TurnTailCell, ToolCell } from './cells.js'
+import { FailureCell, TURN_ERROR_CSS } from './turn-error.js'
 import { Overlays } from './overlays.js'
 import { createBotBrowsers, serveBrowserReads } from './bot-browsers.js'
 import { BROWSER_CSS } from './browser-pane.js'
@@ -633,6 +634,12 @@ export function apply(ctx) {
   // DSH's own settings: models, providers, keys and its plugins.
   actions.openHarnessSettings = openHarnessSettings
   actions.openHarnessOnboarding = openHarnessOnboarding
+  // DSH's Models page, through DS Bot's own onboarding step while it is registered.
+  actions.openHarnessModels = () => {
+    const step = (ctx.slots.entries?.('settings.onboarding') ?? []).some(entry => entry.options?.id === MODELS_STEP)
+    if (step) openHarnessOnboarding(MODELS_STEP)
+    else openHarnessSettings()
+  }
   actions.voiceSetup = () => {
     const navigation = ctx.get('pluginNavigation')
     return navigation ? () => navigation.openBundle(VOICE_BUNDLE) : null
@@ -881,12 +888,14 @@ export function apply(ctx) {
     // The whale wins the seat over a shell account plugin's own launcher (the
     // Desktop's "··· More"), which comes back in Agent mode.
     () => shadow('settings.launcher', { priority: BOT_PRIORITY, inject: face }, AccountLauncher),
+    () => shadow('settings.onboarding', { id: MODELS_STEP, order: MODELS_STEP_ORDER }, OpenModelsStep),
     () => shadow('shell.overlay', { id: 'bot', order: 50, inject: face }, Overlays),
     () => shadow('shell.overlay', { id: 'bot-signin', order: 55, inject: face }, DeepSeekSignIn),
     () => shadow('shell.overlay', { id: 'bot-toast', order: 60, inject: face }, ErrorToast),
   ]
   const installConversation = () => [
     () => installCompiledStyles(CONVERSATION_CSS, 'conversation'),
+    () => installCompiledStyles(TURN_ERROR_CSS, 'turn-errors'),
     () => installMentions(),
     () => installAtMenu(),
     installHeader,
@@ -894,6 +903,8 @@ export function apply(ctx) {
     () => shadow('conversation.chat.node', { key: 'turn-trigger', priority: BOT_PRIORITY, locale: 'chat', inject: face }, TriggerCell),
     () => shadow('conversation.chat.node', { key: 'tool-call', priority: BOT_PRIORITY, locale: 'chat', inject: face }, ToolCell),
     () => shadow('conversation.chat.node', { key: 'turn-process', priority: BOT_PRIORITY, locale: 'chat', inject: face }, TurnProcessCell),
+    // A failed turn shows what the user can do about it instead of the provider's raw text.
+    () => shadow('conversation.chat.node', { key: 'turn-error', priority: BOT_PRIORITY, locale: 'chat', inject: face }, FailureCell),
     // DSH's own turn tail stays, so what other plugins add there shows, such as the
     // cards of the files a turn delivered; its copy and branch row is hidden.
     () => shadow('conversation.chat.turnTail', { id: 'bot-turn-separators', order: 1000, inject: face }, TurnTailCell),

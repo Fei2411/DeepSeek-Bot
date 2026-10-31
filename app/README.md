@@ -41,7 +41,7 @@ Use `.\start.ps1 -DataRoot <folder>` for a different data root (relative paths a
 
 ## First start and import
 
-At its first start the app asks, in system dialogs, for the data location (`~/.ds-bot` by default) and the team workspace (`~/DeepSeek Bot`), and keeps the answer in `locations.json` in its own data. Neither folder may be inside the other or inside the user's DSH data.
+At its first start the app uses the default data location (`~/.ds-bot`) and team workspace (`~/DeepSeek Bot`) without asking, and keeps them in `locations.json` in its own data. The start window says where the data goes and how much room the drive has, with 「换个位置…」: the system folder picker opens only on that click, and the one folder picked gives the root (`src/place.mjs`, the rule of the Windows onboarding note): the folder itself when it is new or empty, otherwise `DeepSeek Bot` inside it, as inside a drive; the data goes to `<root>/data` and the Bots' files to `<root>/workspace`. A root the app added is confirmed on a card; a place without write access, inside OneDrive, inside the user's DSH data or inside the program folder is refused with the reason. The start then begins again in the new folder, and the folders this start made at the default place go away. Once a team has been copied in, the line goes, and the data moves through Settings. The offer to copy a team is still a dialog. Neither folder may be inside the other or inside the user's DSH data.
 
 Both change later in DS Bot's Settings > General > Locations. The plugin moves the team workspace and tells the app, which writes it into `locations.json`. The app names the user's DSH data to the plugin (`DS_BOT_USER_DSH_HOME`), so that neither the team workspace nor a Bot's folder can be set there. The data location moves through the app (`src/move-data.mjs`): the new folder must be empty or new and apart from the old data, the team workspace, the user's DSH data and the program folder. The app stops the Host, copies the data (without the team's lock) into a staging folder beside the new one, renames it to the new folder once it is whole, writes `locations.json` and starts again. A failed or interrupted copy leaves the old location in use and removes the staging folder; the old folder always stays. A run on throwaway folders (`DS_BOT_HOME`) keeps its data location.
 
@@ -97,9 +97,9 @@ Linux gets one AppImage for every distribution — it runs on any glibc system, 
 
 ## Updates
 
-The installed app on Windows updates itself with electron-updater (`src/updates.mjs`), and so does an AppImage on Linux (`APPIMAGE` is set then). At its start and every 4 hours it reads `latest.yml` (Windows) or `latest-linux.yml` (AppImage) of the newest GitHub release, which names the installer and its sha512. It downloads that installer in the background and checks its sha512. When the download is done, a dialog on the window asks whether to restart now: then the app stops its Host and runs the installer, which opens the app again. Otherwise the installer runs when the app quits.
+The installed app on Windows updates itself with electron-updater (`src/updates.mjs`), and so does an AppImage on Linux (`APPIMAGE` is set then). At its start and every 4 hours it reads `latest.yml` (Windows) or `latest-linux.yml` (AppImage) of the newest GitHub release, which names the installer and its sha512. It downloads that installer in the background and checks its sha512. When the download is done, a dialog on the team window asks whether to restart now (a download that is done during the start waits for the team window): then the app stops its Host and runs the installer, which opens the app again. Otherwise the installer runs when the app quits.
 
-The checks start before the Host (after a first start's import), so that a version whose Host does not start can still update. When the start fails, the app waits up to 15 seconds for the newest check. When it found a newer version, the error box says so; after the box the app waits for the download, then installs it and opens again.
+The checks start before the Host (after a first start's import), so that a version whose Host does not start can still update. When the start fails, the start window shows its failure page, and the app waits up to 15 seconds for the newest check. When it found a newer version, a box on the failure page says so; after the box the app waits for the download, then installs it and opens again, unless the user has tried again meanwhile. On macOS and for a deb, the release page opens after the box instead.
 
 On macOS, the app checks GitHub's releases at start and every 4 hours. It asks once per version, after that release's zip for this Mac is attached. A Linux deb works the same way, except that it waits for the `linux-amd64` deb (Debian's name for x64). Stable installs ignore prereleases; prerelease installs can see them. Download opens the release page; Later closes the dialog. The app does not install the update itself. `DS_BOT_UPDATE_URL` on macOS and for a deb points to a JSON list like the `releases` API response. A release needs `tag_name`, an HTTPS `html_url`, and the machine's package in `assets`.
 
@@ -129,7 +129,7 @@ The app builds a system tray icon on Windows, macOS and Linux (`src/shell.mjs`, 
 
 Closing the window hides it: the Host and the Bots go on working, and the Bot browsers' tabs stay. Starting the app again brings the window back, because the second copy hands itself to the one that runs. When the window is gone for good, the tray's Open builds a new one that talks to the Host that runs: it loads the Host's plain address, and the cookie of the first load still carries the session, so neither the launch token nor a second Host is needed.
 
-No window closed ends the app; the tray's Quit is the one ordinary way out. The first close asks once, because the app stays in the tray; the answer is kept in the app's own data (the `tray-close-acknowledged` file in its user data folder). A close during the first start's import or during a data move cancels that work, as it did before. An update that restarts the app, a data move that restarts it, a failed start and the end of the operating system's session close the window for good.
+No window closed ends the app once the team window is up; the tray's Quit is the one ordinary way out. Before the hand-off there is only the start window, and closing it quits. The first close asks once, because the app stays in the tray; the answer is kept in the app's own data (the `tray-close-acknowledged` file in its user data folder). A close during the first start's import or during a data move cancels that work, as it did before. An update that restarts the app, a data move that restarts it and the end of the operating system's session close the window for good; a failed start keeps the start window up as the recovery page.
 
 The application menu of macOS has no Quit and no ⌘Q, for the same reason: the tray's Quit is the one ordinary way out. Only when the tray cannot be built does the menu carry a Quit, so that the app can still be ended.
 
@@ -154,8 +154,10 @@ The launch URL of the Host is good for one use only. When the first load never c
 | `src/host-process.mjs` | Starts the Host in Electron's Node mode and owns its exit |
 | `src/host.mjs` | The Host: boots the profile with `runProfile()` and reports the launch URL and the page injections; for the first-run check (`DS_BOT_CHECK`), the chats it cannot read |
 | `src/profile.mjs` | The profiles: the app's own and the first-run check's, their bundles, and their creation and update |
+| `src/app-patch.mjs` | The app's own profile overlay (`profiles/app-onboarding.patch.yml`, passed through `patchFiles`): it turns off DSH Web's automatic credential step (`credentialOnboarding: false`), since models are set up in DS Bot's Models page and the Main Bot's key card |
 | `src/session-check.mjs` | Which chats the pinned DSH refuses because a newer DSH wrote them |
-| `src/first-run.mjs` | The first start's dialogs (the two folders and the offer to import) and the texts of the data move |
+| `src/first-run.mjs` | The first start's places (the defaults, the saved ones, the folder picker of 「换个位置…」), its offer to import, and the texts of the data move |
+| `src/place.mjs` | The place line of the start page (drive, free space) and the root rule of a picked folder |
 | `src/import.mjs` | The import of a Bot team from the user's DSH |
 | `src/move-data.mjs` | The move of the data location: which folders can take it, and the copy through a staging folder |
 | `src/updates.mjs` | The self-updates (Windows installer, Linux AppImage) and the release-page checks (macOS, Linux deb) |
@@ -166,6 +168,7 @@ The launch URL of the Host is good for one use only. When the first load never c
 | `electron-builder.yml`, `build/` | The package and the installers: app identity, files, icons, the Windows installer, the macOS zip and the Linux AppImage and deb |
 | `scripts/check-packed.mjs` | `npm run check-packed`: the check of a packaged app |
 | `scripts/check-update.mjs` | The check of a packaged app's update from a feed folder (Windows, AppImage) or a mocked release (macOS, deb) |
+| `scripts/release-notes.mjs` | The release's `Download / 下载` table, `SHA256SUMS.txt` and the version-less package copies, run by the release workflow after every package is attached |
 | `scripts/check-lifecycle.mjs` | `npm run check-lifecycle`: the check of the window and the tray in a real Electron, with a fake Host |
 
 The Host installs plugins with the app's own pnpm (`node_modules/pnpm`).

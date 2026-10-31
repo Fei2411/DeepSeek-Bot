@@ -1,0 +1,252 @@
+/* DeepSeek Bot start window. Geometry in DIP of the 720 x 540 window content (40 px band on top). */
+/* tokens */
+/* Generated from the DeepSeek theme in ds-bot/src/client/themes.js, inks.js and styles.js by scripts/start-assets.mjs; do not edit. */
+:root{color-scheme:light dark;--bt-main:#fcfcfc;--bt-card:#ffffff;--bt-ink:#141414;--bt-ink-2:rgba(20,20,20,0.6);--bt-line:rgba(20,20,20,0.08);--bt-line-2:rgba(20,20,20,0.15);--bt-hover:rgba(119,119,119,.09);--bt-accent:#4d6bfe;--bt-accent-ink:#ffffff;--bt-ink-deepseek:#4D6BFE;--bt-green:#00c972;--bt-danger:#e02135}
+@media (prefers-color-scheme:dark){:root{--bt-main:#141414;--bt-card:#1f1f1f;--bt-ink:#f2f2f2;--bt-ink-2:rgba(242,242,242,0.6);--bt-line:rgba(242,242,242,0.08);--bt-line-2:rgba(242,242,242,0.15);--bt-hover:rgba(160,160,160,.12);--bt-accent:#5b7bff;--bt-accent-ink:#141414;--bt-ink-deepseek:#6A84FF}}
+/* /tokens */
+:root{--font:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;--mono:ui-monospace,Consolas,monospace;--u:.88px}
+/* springs */
+/* Generated from ds-bot/src/client/motion.js by scripts/start-assets.mjs; do not edit. */
+:root {
+  --spring-shape: linear(0.0000,0.0510,0.1692,0.3153,0.4639,0.6001,0.7163,0.8102,0.8823,0.9350,0.9717,0.9955,1.0098,1.0171,1.0198,1.0195,1.0175,1.0147,1.0117,1.0089,1.0064,1.0044,1.0028,1.0016,1.0000);
+  --spring-shape-ms: 420ms;
+  --spring-tap: linear(0.0000,0.0541,0.1776,0.3279,0.4784,0.6141,0.7281,0.8187,0.8874,0.9369,0.9709,0.9928,1.0057,1.0124,1.0150,1.0149,1.0134,1.0112,1.0089,1.0067,1.0048,1.0033,1.0021,1.0013,1.0000);
+  --spring-tap-ms: 290ms;
+  --spring-pop: linear(0.0000,0.0698,0.2385,0.4520,0.6677,0.8566,1.0027,1.1009,1.1539,1.1695,1.1578,1.1293,1.0931,1.0566,1.0245,0.9997,0.9830,0.9740,0.9713,0.9732,0.9781,0.9842,0.9904,0.9958,1.0000);
+  --spring-pop-ms: 430ms;
+  --spring-stretch: linear(0.0000,0.0740,0.2474,0.4594,0.6666,0.8422,0.9740,1.0602,1.1060,1.1202,1.1126,1.0924,1.0670,1.0419,1.0204,1.0042,0.9934,0.9875,0.9856,0.9863,0.9887,0.9917,0.9947,0.9974,1.0000);
+  --spring-stretch-ms: 560ms;
+  --spring-list: linear(0.0000,0.0138,0.0503,0.1030,0.1666,0.2367,0.3099,0.3836,0.4556,0.5244,0.5891,0.6489,0.7034,0.7525,0.7962,0.8347,0.8681,0.8969,0.9215,0.9421,0.9592,0.9733,0.9846,0.9936,1.0000);
+  --spring-list-ms: 190ms;
+}
+/* /springs */
+
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;background:transparent}
+/* The stage hangs 80 px below the window until a card needs the sheet; body clips it rather
+   than scrolls, so no focus, scroll anchoring or restored scroll position can shift the page. */
+html{overflow:hidden}
+html[data-frame=system]{background:var(--bt-main)}
+body{position:relative;overflow:clip;font:14px/22px var(--font);color:var(--bt-ink);-webkit-user-select:none;user-select:none;cursor:default}
+html:not([data-start]) body>:not(.band){visibility:hidden}
+p,h1,h2,ol,ul{margin:0;padding:0}
+code{font-family:var(--mono);font-size:inherit}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.band{position:fixed;inset:0 0 auto;height:40px;-webkit-app-region:drag;app-region:drag}
+html[data-frame=system] .band{display:none}
+
+/* stage: everything that moves with the later-start shift */
+.stage{position:absolute;left:calc(50% - 360px);top:0;width:720px;height:100%}
+html[data-frame=system] .stage{top:-24px}
+html:is([data-start=later],[data-start=moving]){--u:.64px}
+/* Until a card needs the sheet, the whale, its line and the hint sit 80 px lower, at the
+   window's visual centre (an integer translation, so the text stays on whole pixels). */
+html:not([data-up]) .stage{translate:0 80px}
+/* The whale's line: one centred line under the waterline, the only voice on the page. Every
+   line of text sits on whole pixels in an untransformed box and never wraps (the copy is
+   written to fit; the ellipsis is a last resort). */
+.voice{position:absolute;left:48px;top:194px;width:624px;height:20px;text-align:center;font-size:15px;line-height:20px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .16s ease-in}
+.voice[data-on]{opacity:1;transition:opacity .16s ease-out}
+/* The clock: top right, where the title row ended, outside the stage so it never moves with
+   the group; in --bt-ink-2, the lightest text the design allows on Mica (note §10). */
+.elapsed{position:absolute;right:calc(50% - 312px);top:54px;width:6.5em;height:18px;text-align:right;white-space:nowrap;font-size:13px;line-height:18px;color:var(--bt-ink-2);font-variant-numeric:tabular-nums;opacity:0;transition:opacity .16s}
+html[data-elapsed] .elapsed{opacity:1;transition:opacity .22s ease-out}
+html[data-frame=system] .elapsed{top:30px}
+html:is([data-start=later],[data-start=moving]) :is(.elapsed,.water,.trace){display:none}
+
+/* lane: the clipped water above the line at y 180 */
+.lane{position:absolute;left:48px;top:76px;width:624px;height:104px;overflow:clip;pointer-events:none}
+.whale-x{position:absolute;left:76px;top:28px;width:88px;height:88px}
+html:is([data-start=later],[data-start=moving]) .whale-x{left:280px;top:47px;width:64px;height:64px}
+.whale-gaze,.whale,.whale-move,.whale-loop{width:100%;height:100%}
+/* .whale-gaze scales only for the breath at rest (whale.js), around the same pivot. */
+.whale-gaze,.whale,.whale-move,.whale-loop{transform-origin:49.95% 79%}
+.whale-gaze{translate:calc(var(--gx,0) * 4.6 * var(--u)) calc(var(--gy,0) * 2.3 * var(--u));transition:translate .18s ease-out}
+.whale-svg{display:block;width:100%;height:100%;overflow:visible;forced-color-adjust:none}
+#tail{transform-box:view-box;transform-origin:27.9px 61.1px}
+.bt-eye,#eye-pair,#gaze{transform-box:fill-box;transform-origin:center}
+#gaze{transform:translate(calc(var(--gx,0) * 12%),calc(var(--gy,0) * 11%));transition:transform .18s ease-out}
+.whale-hit{position:absolute;left:calc(var(--hx,168px) - 58px);top:105px;width:116px;height:86px;border-radius:50%}
+html:is([data-start=later],[data-start=moving]) .whale-hit{left:318px;top:124px;width:84px;height:63px}
+.fx{position:absolute;inset:0;pointer-events:none}
+.ripple{position:absolute;left:calc(var(--rx,168px) - 28px);top:174px;width:56px;height:12px;box-sizing:border-box;border:1.5px solid var(--bt-line-2);border-radius:50%;opacity:0}
+
+/* Progress is where the whale is. The waterline is only the surface it rests on (faint, soft at
+   both ends, nothing drawn on it); a stop the whale has left keeps a resting ring, which never
+   moves again until the hand-off fades it. */
+.water{position:absolute;left:48px;top:180px;width:624px;height:1px;background:linear-gradient(90deg,transparent,var(--bt-line) 12% 88%,transparent)}
+.trace{position:absolute;top:174px;width:56px;height:12px;box-sizing:border-box;border:1px solid var(--bt-line-2);border-radius:50%;opacity:0}
+.trace:nth-child(1){left:152px}
+.trace:nth-child(2){left:344px}
+.trace[data-on]{opacity:.5}
+.track{list-style:none}
+/* step marks of the copying card */
+.mark{position:relative;flex:none;width:16px;height:16px;border-radius:50%;box-sizing:border-box;border:1.5px solid var(--bt-line-2);transition:border-color .12s}
+.mark .dot{position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:var(--bt-ink);opacity:0;transition:opacity .12s}
+.mark svg{position:absolute;left:-1.5px;top:-1.5px;width:16px;height:16px;opacity:0;overflow:visible}
+.mark circle{stroke:none}
+.mark path{fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.check circle{fill:var(--bt-green)}
+[data-state=active]>.mark{border-color:var(--bt-ink)}
+[data-state=active]>.mark .dot{opacity:1}
+[data-state=done]>.mark{border-color:transparent}
+[data-state=done]>.mark .check{opacity:1}
+html[data-shimmer] .voice[data-on]>span{color:transparent;background:linear-gradient(90deg,var(--bt-ink) 0 40%,var(--bt-ink-2) 50%,var(--bt-ink) 60% 100%) 0 0/300% 100%;-webkit-background-clip:text;background-clip:text;animation:bt-shimmer 2.2s steps(60) infinite}
+@keyframes bt-shimmer{from{background-position:100% 0}to{background-position:0 0}}
+
+/* The hint row: one grey line that prepares the user for what comes next, or the log button. */
+.caption{position:absolute;left:48px;top:220px;width:624px;height:28px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:13px;line-height:18px;color:var(--bt-ink-2)}
+.caption-text{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.caption>*{opacity:0;filter:blur(6px);transition:opacity .16s,filter .16s}
+.caption>[data-on]{opacity:1;filter:none;transition:opacity .22s ease-out,filter .22s ease-out}
+.caption>.btn[data-on]{transition:opacity .22s ease-out .09s,filter .22s ease-out .09s,scale var(--spring-tap-ms) var(--spring-tap) .09s}
+@starting-style{.caption>.btn[data-on]{scale:.96}}
+
+/* sheet: one surface that every card morphs in and out of */
+.sheet{position:absolute;left:48px;top:260px;width:624px;height:calc(100% - 304px)}
+.sheet-edge,.sheet-fill{position:absolute;inset:0;opacity:0;clip-path:inset(0 0 100% 0 round 12px)}
+.sheet-edge{background:var(--bt-line)}
+.sheet-fill{background:var(--bt-card)}
+.sheet-body{position:absolute;inset:0}
+.lead{font-size:14px;line-height:22px}
+.small{font-size:13px;line-height:18px;color:var(--bt-ink-2)}
+.dim{color:var(--bt-ink-2)}
+.ink{color:var(--bt-ink)}
+.danger{color:var(--bt-danger)}
+.card{position:absolute;inset:0 0 auto;max-height:100%;box-sizing:border-box;padding:14px 16px;display:flex;flex-direction:column;transition:opacity .22s ease-out .07s,filter .22s ease-out .07s}
+@starting-style{.card{opacity:0;filter:blur(6px)}}
+.card-scroll,.log{scrollbar-width:thin;scrollbar-color:var(--bt-line-2) transparent}
+.card-scroll{position:relative;min-height:0;flex:0 1 auto;overflow:auto}
+.card-scroll>*+*{margin-top:6px}
+.card-scroll>.card-actions{margin-top:12px}
+.card-title{font-size:15px;line-height:20px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-actions{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}
+.card>.card-actions:first-child{margin-top:0}
+.card-actions .foot,.card-actions .eta{margin-left:auto}
+.foot{font-size:13px;line-height:18px;color:var(--bt-ink-2)}
+.card>.foot,.miss{margin-top:8px}
+.miss{font-size:13px;line-height:18px;color:var(--bt-danger)}
+:is(.miss,.banner,.log,.confirm,.models,.more,[data-u]):not([hidden]){transition:opacity .22s ease-out,filter .22s ease-out}
+@starting-style{:is(.miss,.banner,.log,.confirm,.models,.more,[data-u]):not([hidden]){opacity:0;filter:blur(6px)}}
+/* Opened, the import card's body fits the sheet at 540 px with these gaps; a model list
+   opened under it scrolls inside the card. */
+.more{margin-top:4px;padding-top:5px;border-top:1px solid var(--bt-line)}
+.more>*+*{margin-top:4px}
+.card[data-kind=import] .card-scroll>*+*{margin-top:4px}
+.extra-row{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.model-row{display:flex;gap:8px;align-items:baseline}
+.models{list-style:none}
+.models .btn{width:100%;justify-content:flex-start;border-radius:8px;background:none;height:30px;font-size:13px}
+.models .btn:hover{background:var(--bt-hover)}
+.opts{display:flex;gap:20px;font-size:13px;line-height:18px}
+.opts label{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+.opts input{margin:0;width:14px;height:14px;accent-color:var(--bt-accent)}
+.steps{position:relative;list-style:none}
+.steps li{display:flex;align-items:center;gap:10px;height:28px;align-items:flex-start;padding-top:2px;box-sizing:border-box;font-size:13px;line-height:18px;color:var(--bt-ink-2);font-variant-numeric:tabular-nums}
+.steps li .mark{margin-top:1px}
+.steps li[data-state=active]{color:var(--bt-ink)}
+.card[data-confirm] .steps li:not([data-state=active]){display:none}
+.card[data-confirm] .stop,.card:not([data-confirm]) [data-confirm]{display:none}
+.copy-steps{position:relative}
+.copy-steps .bar{position:absolute;left:26px;right:0;top:calc(var(--step,0) * 28px + 22px)}
+.card[data-confirm] .copy-steps .bar{top:22px}
+.bar{height:4px;border-radius:2px;background:var(--bt-hover);overflow:hidden}
+.bar-fill{display:block;height:100%;background:var(--bt-accent);transform-origin:0 50%;scale:0 1}
+.banner{border-radius:12px;background:var(--bt-hover);padding:12px 14px}
+.card-scroll>.banner{margin-top:10px}
+.banner+.card-actions{margin-top:10px}
+.banner-row{display:flex;align-items:center;gap:12px}
+.banner-row .lead{flex:1 1 auto}
+.banner-down,.banner>.small,.banner-fail{margin-top:8px}
+.banner-line{display:flex;gap:12px;justify-content:space-between;font-variant-numeric:tabular-nums}
+.banner-down .bar{margin-top:6px}
+.banner-fail{display:flex;align-items:center;gap:8px}
+.banner-fail .danger{margin-right:auto}
+.log{margin-top:12px;border-radius:8px;background:var(--bt-hover);height:168px;overflow:auto;-webkit-user-select:text;user-select:text}
+.log pre{margin:0;padding:10px 12px;font:13px/18px var(--mono);color:var(--bt-ink-2);white-space:pre-wrap;word-break:break-all}
+
+/* buttons: .bt-send (primary), .bt-soft, .bt-soft-sm and a text link, ui-standard 10.1 */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;flex:none;height:36px;padding:0 16px;border:0;border-radius:999px;background:var(--bt-hover);color:var(--bt-ink);font:inherit;font-size:14px;line-height:20px;white-space:nowrap;cursor:pointer;transition:background-color .12s,color .12s,scale var(--spring-tap-ms) var(--spring-tap)}
+.btn:hover{background:color-mix(in srgb,var(--bt-hover),var(--bt-ink) 6%)}
+.btn:active{scale:.96}
+.btn[data-look=primary]{height:40px;background:var(--bt-accent);color:var(--bt-accent-ink)}
+.btn[data-look=primary]:hover{background:color-mix(in srgb,var(--bt-accent),var(--bt-ink) 10%)}
+.btn[data-look=small]{height:28px;padding:0 12px;font-size:13px;line-height:18px}
+.btn[data-look=link]{height:auto;padding:0 2px;border-radius:4px;background:none;color:var(--bt-ink);font-size:13px;line-height:18px;text-decoration:underline;text-decoration-color:var(--bt-line-2);text-underline-offset:3px}
+.btn[data-look=link]:hover{background:var(--bt-hover)}
+.btn.danger{color:var(--bt-danger)}
+.btn:focus-visible{outline:2px solid var(--bt-accent);outline-offset:2px}
+.btn:focus:not(:focus-visible){outline:none}
+.disclose{text-decoration:none!important;color:var(--bt-ink-2)!important}
+.disclose svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;transition:rotate var(--spring-tap-ms) var(--spring-tap)}
+.disclose[aria-expanded=true] svg{rotate:180deg}
+
+/* The footer row: the note at the left, and where the data goes with 「换个位置…」 at the right
+   (first starts with a place). The note never gives way; the place's text is cut with an
+   ellipsis where the two would meet (English, a long folder). */
+.footrow{position:absolute;left:calc(50% - 312px);right:calc(50% - 312px);top:calc(100% - 36px);display:flex;justify-content:space-between;align-items:baseline;gap:16px;font-size:13px;line-height:18px;color:var(--bt-ink-2)}
+.note{flex:none;white-space:nowrap}
+.place{flex:0 1 auto;min-width:0;margin:0;display:flex;align-items:baseline;gap:6px;white-space:nowrap}
+.place-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
+html:is([data-start=later],[data-start=moving]) .footrow{display:none}
+/* A work area under 588 px gets a 500 px window: the stage rises 8 px and the sheet still ends
+   above the footer. */
+@media (max-height:520px){.stage{top:-8px}html[data-frame=system] .stage{top:-32px}.sheet{height:calc(100% - 296px)}.elapsed{top:46px}html[data-frame=system] .elapsed{top:22px}}
+
+/* entrance, keyed on data-start (no JS timing) */
+@keyframes bt-veil{from{opacity:0;filter:blur(6px)}}
+@keyframes bt-enter-first{from{transform:translateY(64px) rotate(-12deg)}}
+@keyframes bt-enter-later{from{transform:translateY(48px)}}
+@keyframes bt-wake{0%{transform:scaleY(.05)}60%{transform:scaleY(1.06)}}
+@keyframes bt-flick-in{0%,100%{transform:none}35%{transform:rotate(-10deg)}70%{transform:rotate(8deg)}}
+@keyframes bt-ripple-scale{from{scale:.5}to{scale:1.6}}
+@keyframes bt-ripple-fade{from{opacity:.9}to{opacity:0}}
+html[data-start=first]:not([data-resume],[data-entered]) .whale-move{animation:bt-enter-first var(--spring-stretch-ms) var(--spring-stretch) backwards}
+html[data-start=first]:not([data-resume],[data-entered]) .bt-eye{animation:bt-wake .16s ease-out .36s backwards}
+html[data-start=first]:not([data-resume],[data-entered],[data-tier=quiet]) #tail{animation:bt-flick-in .4s ease-in-out .3s}
+html[data-start=first]:not([data-resume],[data-settled],[data-tier=quiet]) .ripple{animation:bt-ripple-scale var(--spring-shape-ms) var(--spring-shape) .12s backwards,bt-ripple-fade .56s linear .12s}
+html[data-start=first]:not([data-resume],[data-settled]) .voice{animation:bt-veil .22s ease-out .16s backwards}
+html[data-start=first]:not([data-resume],[data-settled]) .water{animation:bt-veil .22s ease-out .22s backwards}
+html[data-start=first]:not([data-resume],[data-settled]) :is(.note,.place){animation:bt-veil .22s ease-out .42s backwards}
+html:is([data-start=later],[data-start=moving]):not([data-resume],[data-entered]) .whale-move{animation:bt-enter-later var(--spring-tap-ms) var(--spring-tap) backwards}
+html:is([data-start=later],[data-start=moving]):not([data-resume],[data-settled]) .voice{animation:bt-veil .22s ease-out .06s backwards}
+
+/* state loops, keyed on data-whale and data-tail; plugin keyframes (styles.js:84-105) in px via --u */
+html[data-whale=searching] .whale-loop{animation:bt-seek 1s ease-in-out infinite}
+html[data-whale=searching] #eye-pair{animation:bt-scan 1.6s ease-in-out infinite}
+html[data-whale=working] .whale-loop{animation:bt-bob 1.6s ease-in-out infinite}
+html[data-whale=working] .bt-eye{animation:bt-blink 2.4s ease-in-out infinite}
+html[data-whale=pondering] .whale-loop{animation:bt-ponder 2.2s ease-in-out infinite}
+html[data-whale=pondering] .bt-eye{animation:bt-squint 2.2s ease-in-out infinite}
+html[data-whale=sending] .whale-loop{animation:bt-dash 1.1s cubic-bezier(.4,0,.2,1) infinite}
+html[data-tail=beat]:not([data-tier=quiet]) #tail{animation:bt-tail-beat 1.1s ease-in-out -.55s infinite alternate}
+html[data-tail=dash]:not([data-tier=quiet]) #tail{animation:bt-tail-dash .55s ease-in-out -.275s infinite alternate}
+@keyframes bt-seek{0%,100%{transform:rotate(-4deg)}50%{transform:translateY(calc(-2.9 * var(--u))) rotate(-1deg)}}
+@keyframes bt-scan{0%,100%{transform:translateX(-12%)}50%{transform:translateX(12%)}}
+@keyframes bt-bob{0%,100%{transform:none}30%{transform:translateY(calc(-2.3 * var(--u))) rotate(-5deg)}65%{transform:rotate(4deg)}}
+@keyframes bt-blink{0%,42%,50%,100%{transform:none}46%{transform:scaleY(.03)}48%{transform:scaleY(1.06)}}
+@keyframes bt-ponder{0%,100%{transform:rotate(4deg)}50%{transform:translateY(calc(-1.7 * var(--u))) rotate(7deg)}}
+@keyframes bt-squint{0%,100%{transform:translate(0,-4%) scaleY(.7)}50%{transform:translate(5%,-5%) scaleY(.78)}}
+@keyframes bt-dash{0%,100%{transform:none}35%{transform:translateX(calc(8.3 * var(--u))) rotate(7deg)}55%{transform:translateX(calc(-1.8 * var(--u))) rotate(-3deg)}}
+@keyframes bt-tail-beat{from{transform:rotate(-5deg)}to{transform:rotate(5deg)}}
+@keyframes bt-tail-dash{from{transform:rotate(-8deg)}to{transform:rotate(8deg)}}
+
+/* hand-off: window-level content fades */
+html[data-exit~=caption] :is(.elapsed,.caption),html[data-exit~=all] :is(.voice,.water,.fx .trace,.sheet,.note,.place){opacity:0;transition:opacity .16s}
+html[data-hidden] *{animation-play-state:paused!important}
+
+/* reduced motion (ui-standard 9.6, styles.js:106): static whale, fades only */
+:root[data-eyes=squint] .bt-eye{transform:translate(0,-4%) scaleY(.7)}
+:root[data-eyes=heavy] .bt-eye{transform:translateY(1.5px) scaleY(.55)}
+:root[data-eyes=happy] .bt-eye{transform:scaleY(0)}
+:root[data-eyes=happy] .bt-eye-happy{opacity:1}
+@media (prefers-reduced-motion:reduce){
+:root :is(.whale-x,.whale-gaze,.whale,.whale-move,.whale-loop,#tail,#gaze,#eye-pair,.bt-eye,.bt-eye-happy,.ripple,.trace,.stage){animation:none!important;transition:none!important}
+:root :is(.voice,.water,.note,.place){animation:none!important}
+:root .voice>span{animation:none!important;background:none!important;color:var(--bt-ink)!important}
+:root :is(.voice,.caption>*,.elapsed,.card,.miss,.banner,.log,.confirm,.models,[data-u]){filter:none!important;scale:none!important;transition-property:opacity!important;transition-duration:.12s!important;transition-delay:0s!important}
+:root .btn:active{scale:none}
+:root[data-exit~=lane] .lane{opacity:0;transition:opacity .12s}
+}
+
+@media (forced-colors:active){.sheet-edge{background:CanvasText}.sheet-fill{background:Canvas}.btn{border:1px solid ButtonText}.bar-fill{background:Highlight}.water{background:CanvasText}.trace{border-color:CanvasText}}

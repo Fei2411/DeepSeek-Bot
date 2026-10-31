@@ -88,9 +88,11 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
     h('div', { className: 'bt-field' },
       h('span', { className: 'bt-field-label' }, t('Model')),
       h(ModelMenu, { bot: { id: 'new-bot', name: finalName, model: model || undefined, effort }, roster, actions, wide: true, onPick: ref => { setModel(ref); setEffort(undefined) }, onPickEffort: picked => setEffort(picked ?? null) }),
-      h('span', { className: 'bt-note' }, (roster.models ?? []).length > 0
+      h('span', { className: 'bt-note' }, model
         ? t('The Bot runs on this model. You can change it later in its details.')
-        : t('Add a provider and a model in DeepSeek Harness first, or pick one in the Bot\'s chat later.'))),
+        : (roster.models ?? []).length > 0
+          ? t('Pick a model here, or the Bot asks for one in its chat.')
+          : t('Add a provider and a model in DeepSeek Harness first, or pick one in the Bot\'s chat later.'))),
     error ? h('div', { className: 'bt-error', role: 'alert', style: { padding: 0 } }, error) : null,
     h('div', { className: 'bt-create-foot' },
       h('button', { type: 'button', className: 'bt-soft', onClick: onBack }, canGoBack ? t('Back') : t('Cancel')),

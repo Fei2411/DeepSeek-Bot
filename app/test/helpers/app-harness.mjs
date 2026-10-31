@@ -34,11 +34,33 @@ export const startApp = async ({ packaged = true } = {}) => {
   // The app is a packaged one, so that it has an updater. The flag comes after the start,
   // because a packaged app starts on the canonical path of its own.
   state.packaged = packaged
+  // A Linux build updates itself only from inside an AppImage; outside one the app asks about
+  // the newest GitHub release, which a test must never fetch. The faked electron-updater
+  // answers for the AppImage, as it does on Windows.
+  if (process.platform === 'linux') process.env.APPIMAGE ??= '/tmp/deepseek-bot.AppImage'
   return { home, workspace }
 }
 
-/** The window of the app: the last one it built. */
-export const window = () => state.windows.at(-1)
+// The start window, which shows while the Host boots and hands over to the team window.
+const isStart = win => (win.options.webPreferences?.additionalArguments ?? []).some(arg => arg.startsWith('--ds-bot-start='))
+
+/** The team windows the app built, the start window left out. */
+export const teamWindows = () => state.windows.filter(win => !isStart(win))
+
+/** The team window of the app: the last one it built. */
+export const window = () => teamWindows().at(-1)
+
+/**
+ * The team view has mounted (ds-bot calls dsBotApp.ready()): the start window hands over and the
+ * team window shows.
+ */
+export const handOff = async () => {
+  const win = window()
+  await waitFor(() => win.loaded.some(url => url.startsWith('http://127.0.0.1:')), 'load the team view')
+  win.webContents.mainFrame.url = win.url
+  state.ipc.get('ds-bot:ready')({ sender: win.webContents, senderFrame: win.webContents.mainFrame })
+  await waitFor(() => win.visible === true, 'show the team window')
+}
 
 /** The entries of the tray's menu: Open, a line, Quit. */
 export const trayMenu = () => state.tray.menu.template

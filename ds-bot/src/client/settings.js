@@ -26,7 +26,7 @@ const capitalize = word => word[0].toUpperCase() + word.slice(1)
 
 // Settings dialog: a 198px page list beside the page. Bots and group chats each list
 // their members, and one opens on its own settings form. Usage widens the dialog.
-// Models is there only in a window without DSH's own settings, which carry the providers.
+// Models is there wherever the host serves the model providers, beside DSH's own settings.
 const SETTINGS_PAGES = [['general', 'General'], ['models', 'Models'], ['bots', 'Bots'], ['groups', 'Group chats'], ['connectors', 'Connectors'], ['capabilities', 'Capabilities'], ['browser', 'Browser'], ['schedules', 'Scheduled tasks'], ['usage', 'Usage'], ['secrets', 'Secrets'], ['feedback', 'Feedback'], ['about', 'About DS Bot']]
 const PAGE_ICONS = { ...SETTINGS_ICONS, models: SlidersIcon, connectors: ConnectorIcon, capabilities: PlugIcon, browser: ConnectorIcon, schedules: ClockIcon, secrets: KeyIcon, feedback: FeedbackIcon, about: InfoIcon }
 
@@ -270,8 +270,8 @@ export function SettingsDialog({ page, id, roster, actions, useUpdate, leaving =
         }, h(PAGE_ICONS[key]), t(text))),
         actions.openHarnessSettings ? h('button', {
           type: 'button', className: 'bt-settings-item bt-settings-shell', title: t('Models, providers, and the rest of DeepSeek Harness'),
-          onClick: () => { close(); actions.openHarnessSettings() },
-        }, h(SlidersIcon), t('Harness settings')) : null),
+          onClick: () => { close(); (actions.openHarnessModels ?? actions.openHarnessSettings)() },
+        }, h(SlidersIcon), t('Advanced settings (DeepSeek Harness)')) : null),
       h('div', { className: 'bt-settings-main' },
         h('div', { className: 'bt-settings-head' },
           back ? h('button', { type: 'button', className: 'bt-icon-btn', 'aria-label': back, title: back, onClick: () => actions.openSettings(shown) }, h(ChevronLeftIcon)) : null,

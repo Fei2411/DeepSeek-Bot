@@ -1,0 +1,65 @@
+name: Install problem / 安装问题
+description: The desktop app does not download, install or start. / 桌面应用下载不了、装不上或打不开。
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **No diagnostics needed**: the app may not have started at all. Tell us where it stopped and what the message said.
+        **不需要诊断信息**：应用可能根本没跑起来。告诉我们卡在哪一步、提示框里写了什么就行。
+
+        Many warnings have a way through: see **The browser or Windows warns you, or blocks the installer?** at the top of the [README](https://github.com/Fei2411/DS-Bot#readme).
+        很多提示都能点过去：先看 [README](https://github.com/Fei2411/DS-Bot/blob/main/README.zh.md) 开头的 **浏览器或 Windows 提示、拦下了安装包？**。
+  - type: dropdown
+    id: step
+    attributes:
+      label: Where did it stop? / 卡在哪一步？
+      options:
+        - Download / 下载
+        - Browser warning / 浏览器提示
+        - SmartScreen or Smart App Control / SmartScreen 或智能应用控制
+        - Installer / 安装
+        - First start / 第一次打开
+        - Other / 其他
+    validations:
+      required: true
+  - type: textarea
+    id: message
+    attributes:
+      label: The message, or a photo of it / 提示框的文字，或者拍一张照片
+      description: Copy the text of the dialog, or paste a screenshot or a phone photo (Ctrl+V or drag it in). / 复制提示框里的文字，或者粘贴截图、手机拍的照片（Ctrl+V 或拖进来）。
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version / Windows 版本
+      description: Press Win+R, type winver and press Enter. On macOS or Linux, write the system and its version. / 按 Win+R，输入 winver，回车。macOS 或 Linux 上写系统和版本。
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: input
+    id: language
+    attributes:
+      label: System language / 系统显示语言
+      description: The display language of Windows, macOS or Linux. / Windows、macOS 或 Linux 的显示语言。
+      placeholder: 简体中文 / English
+    validations:
+      required: true
+  - type: input
+    id: file
+    attributes:
+      label: File you downloaded / 下载的文件名
+      placeholder: DeepSeek-Bot-0.2.2-win-x64.exe
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else / 其他情况
+      description: For example the antivirus you use, or what you already tried. / 比如用的杀毒软件，或者已经试过什么。
+  - type: checkboxes
+    id: clean
+    attributes:
+      label: Privacy / 隐私
+      options:
+        - label: This report has no API keys, tokens or personal data. / 报告里没有 API key、token 或个人信息。
+          required: true

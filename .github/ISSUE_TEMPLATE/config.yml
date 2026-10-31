@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: Questions & help
     url: https://github.com/Fei2411/DS-Bot/discussions/new?category=q-a
-    about: Installation, setup and usage questions — ask in Discussions, not Issues.
+    about: Setup and usage questions — ask in Discussions, not Issues. If the desktop app does not install or start, use Install problem.
   - name: Feature requests & ideas
     url: https://github.com/Fei2411/DS-Bot/discussions/new?category=ideas
     about: Suggest features and discuss anything that is not a bug — in Discussions.

@@ -28,6 +28,8 @@ DS Bot 是 DSH 插件，只能用 DSH 公开的接口。有些地方 DSH 的设�
 | C13 | 10-14 | #37，PR #168 | 预设是全局或按会话选的，插件不能只给 Bot 会话换掉 PTC 的工具展示、保留用户其余配置 | DS Bot 新建的会话一律用 standard 预设，用户给 DSH 选的预设（包括自定义组合）不用于 Bot | 用户自定义预设里的插件不会出现在 Bot 里 | 每个 Bot 可选自己的 harness（愿景第 9 条），默认 standard |
 | C14 | 10-20 | #362，PR #363 | DSH 网页前端的 Windows 标题栏布局只有不透明一种，没有让窗口材质透出侧栏的接口；桌面模式（`data-platform`）要 DSH Desktop 的原生键盘桥 | 桌面应用只标 `data-windows-titlebar`（DSH 网页前端自己的标题栏布局），页面留在网页模式。Windows 11 上 `app/src/mica.css` 用 DSH 的私有类名让 Mica 透出侧栏；`check-packed` 检查每条规则还能找到元素 | 升级锁定的 DSH 时类名或结构可能变；macOS 暂时保留系统标题栏 | 自己的界面接着做时，窗口外框由应用自己画 |
 | C15 | 10-22 | #398 | DeepSeek 账号由 DSH 的账号插件管理，登录、退出的操作和文案都在它注入的条目里；DS Bot 没有自己的账号界面 | Bot 模式的账号菜单借用这个条目：账号插件在、且已登录时显示「退出登录」，确认文案和退出操作都用插件自己的 | 账号插件改了条目或文案的结构，这一项就不显示；文案跟着 DSH 走，不是 DS Bot 的 | DS Bot 自己的前端管理账号的登录和退出 |
+| C16 | 10-26 | [Windows 上手流程](2026-10-26-windows-onboarding.md) | DSH 网页版的「预览版说明」没有文档开关，只有 DSH Desktop 的预加载标记能关掉它 | 不伪装 `dshDesktop`，也不预先写它的已读版本号；桌面应用里它仍是第一屏。DSH 自己的自动凭据引导用有文档的 `credentialOnboarding: false` 关掉（`app/src/app-patch.mjs`） | 新用户多点一次「继续」，内容讲的是 DSH 而不是 DS Bot；`credentialOnboarding` 那一行改名时补丁只留一条警告、悄悄失效 | 向 DSH 要一个开关；之后在应用的补丁里关掉 |
+| C17 | 10-26 | [Windows 上手流程](2026-10-26-windows-onboarding.md) | `settings.launcher` 插槽只能打开设置的第一节，不能直接打开「模型」 | 插件注册一个自己的 `settings.onboarding` 步骤（`ds-bot-models`）：自动检查时立刻完成，被 `openOnboarding` 明确打开时调用 DSH 交给步骤的 `openSection('models')` | 多一个看不见的引导步骤；DSH 改了步骤的约定，就退回打开设置首页 | 向 DSH 要 `openSection`；DS Bot 自己的模型页已经在所有形态里可用 |
 
 ## 记录规则
 

@@ -13,6 +13,10 @@ name: Release
 # The release tag must be v<version in ds-bot/package.json> and must point at a commit on
 # main. A version with a pre-release part (0.2.0-rc.1) goes to the npm tag "next", so that
 # "latest" stays on the last stable version.
+#
+# Publish the release with "Set as latest release" turned off: the last job marks it Latest
+# once every package, the download table and SHA256SUMS.txt are on it, so a releases/latest
+# link never finds a release whose installer is still being built.
 
 on:
   release:
@@ -230,3 +234,54 @@ jobs:
         run: |
           version="$(node -p "require('./package.json').version")"
           gh release upload "$TAG" "dist-pack/DeepSeek-Bot-$version-linux-x86_64.AppImage" "dist-pack/DeepSeek-Bot-$version-linux-amd64.deb" dist-pack/latest-linux.yml --clobber
+
+  downloads:
+    name: Download table, checksums and Latest
+    needs: [app-windows, app-macos, app-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Download the packages from the release
+        if: github.event_name == 'release'
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          gh release download "$TAG" --dir "$RUNNER_TEMP/packages" --pattern "DeepSeek-Bot-$version-*"
+          gh release view "$TAG" --json body --jq .body > "$RUNNER_TEMP/notes.md"
+      # The dry run has no release, so it checks the table and the checksums on the packages
+      # that the app jobs kept.
+      - name: Download the packages of the dry run
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: DeepSeek-Bot-*
+          path: ${{ runner.temp }}/packages
+          merge-multiple: true
+      - name: Write the download table and the checksums
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          notes=()
+          if [ -f "$RUNNER_TEMP/notes.md" ]; then notes=("$RUNNER_TEMP/notes.md"); fi
+          node scripts/release-notes.mjs "$version" "$RUNNER_TEMP/packages" "$RUNNER_TEMP/attach" "${notes[@]}" > "$RUNNER_TEMP/body.md"
+          ls -l "$RUNNER_TEMP/attach"
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Attach the checksums and the copies without a version
+        if: github.event_name == 'release'
+        run: gh release upload "$TAG" "$RUNNER_TEMP"/attach/* --clobber
+      - name: Put the download table on top of the notes
+        if: github.event_name == 'release'
+        run: gh release edit "$TAG" --notes-file "$RUNNER_TEMP/body.md"
+      # GitHub cannot make a pre-release Latest.
+      - name: Mark the release as Latest
+        if: github.event_name == 'release' && !github.event.release.prerelease
+        run: gh release edit "$TAG" --latest

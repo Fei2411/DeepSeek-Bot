@@ -1,14 +1,26 @@
-// Gives the page that the app's Host serves the app's own bridge. On Windows it also marks the
-// page for the frameless window the way DSH Desktop's preload does
+// Gives the page that the app's Host serves the app's own bridge, and the app's start page its
+// own, smaller one; each window's arguments name the one page that gets it. On Windows it also
+// marks the Host's page for the frameless window the way DSH Desktop's preload does
 // (apps/desktop/src/preload-windows.ts, preload-platform.ts and preload-theme.ts; see NOTICE),
 // but without data-platform: that puts DSH's shortcuts on native menu input, which this
 // window does not have.
 const { contextBridge, ipcRenderer } = require('electron')
 
-const host = process.argv.find(value => value.startsWith('--ds-bot-origin='))?.slice('--ds-bot-origin='.length)
-if (host !== undefined && location.origin === host) {
-  // DS Bot's settings show and move the app's data location through this.
+const argument = name => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3)
+const startPage = argument('ds-bot-start')
+const host = argument('ds-bot-origin')
+if (startPage !== undefined) {
+  if (location.href.split(/[?#]/u)[0] === startPage) contextBridge.exposeInMainWorld('dsBotStart', startBridge())
+} else if (host !== undefined && location.origin === host) {
+  let ready = false
   contextBridge.exposeInMainWorld('dsBotApp', {
+    // The team view has mounted: the start window hands over to this one.
+    ready: () => {
+      if (ready) return
+      ready = true
+      ipcRenderer.send('ds-bot:ready')
+    },
+    // DS Bot's settings show and move the app's data location through this.
     dataLocation: () => ipcRenderer.invoke('ds-bot:data-location'),
     moveData: (workspace) => ipcRenderer.invoke('ds-bot:move-data', typeof workspace === 'string' ? workspace : undefined),
     teamWorkspaceChanged: (path) => { ipcRenderer.send('ds-bot:team-workspace', String(path)) },
@@ -18,6 +30,12 @@ if (host !== undefined && location.origin === host) {
     // The app's own updater, for the About row's state and buttons.
     updates: updatesBridge(),
   })
+  // A preload runs before the document root exists.
+  const loaded = (run) => {
+    if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', run, { once: true })
+    else run()
+  }
+  loaded(reportLook)
   const caption = process.argv.find(value => value.startsWith('--ds-bot-caption='))
   if (caption !== undefined) {
     ipcRenderer.on('ds-bot:fullscreen', (_event, fullscreen) => {
@@ -26,10 +44,50 @@ if (host !== undefined && location.origin === host) {
       if (fullscreen) root.dataset.fullscreen = 'true'
       else delete root.dataset.fullscreen
     })
-    const start = () => { frameless(caption.slice('--ds-bot-caption='.length), process.argv.includes('--ds-bot-mica')) }
-    // A preload runs before the document root exists.
-    if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', start, { once: true })
-    else start()
+    loaded(() => { frameless(caption.slice('--ds-bot-caption='.length), process.argv.includes('--ds-bot-mica')) })
+  }
+}
+
+// The app's theme (DSH's) and the Bot animation tier (ds-bot's), which the start window takes
+// at the next start.
+function reportLook() {
+  const root = document.documentElement
+  const sent = {}
+  const send = (channel, value) => {
+    if (value === null || value === sent[channel]) return
+    sent[channel] = value
+    ipcRenderer.send(channel, value)
+  }
+  const report = () => {
+    send('ds-bot:native-theme', root.getAttribute('data-ds-theme-source'))
+    send('ds-bot:motion', document.body?.getAttribute('data-bt-motion') ?? null)
+  }
+  const observer = new MutationObserver(report)
+  observer.observe(root, { attributeFilter: ['data-ds-theme-source'] })
+  if (document.body !== null) observer.observe(document.body, { attributeFilter: ['data-bt-motion'] })
+  report()
+}
+
+// The main process sends the whole state on every change; a page that subscribes late, or again,
+// gets the last one first.
+function startBridge() {
+  const listeners = new Set()
+  let last
+  const tell = (listener, state) => {
+    try { listener(state) } catch (error) { console.error('DeepSeek Bot: a start state listener failed', error) }
+  }
+  ipcRenderer.on('ds-bot:start-state', (_event, state) => {
+    last = state
+    for (const listener of [...listeners]) tell(listener, state)
+  })
+  return {
+    onState(listener) {
+      if (typeof listener !== 'function') return () => {}
+      listeners.add(listener)
+      if (last !== undefined) tell(listener, last)
+      return () => { listeners.delete(listener) }
+    },
+    act: (name, payload) => ipcRenderer.invoke('ds-bot:start-act', String(name), payload),
   }
 }
 
@@ -108,15 +166,6 @@ function frameless(height, mica) {
   // DSH keeps the dialog mask off the caption band, which then stays bright above a dimmed
   // page; here the band is part of the page, so the mask covers it too.
   root.style.setProperty('--dsh-frame-chrome-top', '0px')
-  let theme
-  const sendTheme = () => {
-    const value = root.getAttribute('data-ds-theme-source')
-    if (value === null || value === theme) return
-    theme = value
-    ipcRenderer.send('ds-bot:native-theme', value)
-  }
-  new MutationObserver(sendTheme).observe(root, { attributeFilter: ['data-ds-theme-source'] })
-  sendTheme()
   captionColors(mica)
 }
 

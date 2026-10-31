@@ -141,7 +141,9 @@ DSH Desktop 和桌面应用各做一遍。
 
 ## 12. 桌面应用（Windows）
 
-12.7 和 12.8 要在 Release 发布、工作流传完安装包之后做：Release 里要有安装包、它的 `.blockmap` 和 `latest.yml`。上一个发布版本没有安装包时，跳过这两项。
+发布 Release 时不勾「Set as the latest release」。工作流的最后一个任务「Download table, checksums and Latest」等所有安装包都传完，最后一步才把它标为 Latest。工作流跑完后确认：Release 里有 `SHA256SUMS.txt` 和不带版本号的文件（如 `DeepSeek-Bot-win-x64.exe`），说明开头是「下载 / Download」表，Release 标着「Latest」。有任务失败时，在这次运行里重跑失败的任务（Re-run failed jobs）；不要手动标为 Latest，那样 Release 就没有校验和和下载表。
+
+12.7 和 12.8 要等整个 Release 工作流跑完、Release 页上显示「Latest」之后再做：Windows 的自动更新只看标为 Latest 的 Release，在那之前它会一直说没有新版本。Release 里还要有安装包、它的 `.blockmap` 和 `latest.yml`。上一个发布版本没有安装包时，跳过这两项。
 
 | # | 步骤 | 期望 | 结果 |
 |---|---|---|---|

@@ -9,11 +9,30 @@ import { format } from 'node:util'
 import { apply } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 
+// DSH's settings and credentials for a DeepSeek route that takes an API key. A key set
+// or removed is announced the way DSH announces it. `records` are the stored records
+// (an account sign-in's), announced by the test.
+function keyed(ctx, stored, records) {
+  return {
+    settings: { describe: () => [{ ns: 'llm-deepseek', revision: 0, value: { apiKeyEnv: 'DEEPSEEK_API_KEY' }, user: {}, base: {} }] },
+    credentials: {
+      describe: async ref => ({ configured: stored.has(ref), writable: true }),
+      set: async (ref) => { stored.add(ref); ctx.emit('credentials/reference-updated', ref) },
+      unset: async (ref) => { stored.delete(ref); ctx.emit('credentials/reference-updated', ref) },
+      describeRecord: async key => ({ configured: records.has(key), writable: true }),
+    },
+  }
+}
+
 // Enough of the dsh services for the roster to make Sessions; kickoff messages are dropped.
-function start(team, { models = [], reasoning = {}, archiveError, selection } = {}) {
+// With `keys`, the models' route takes an API key and these are the ones set.
+function start(team, { models = [], reasoning = {}, archiveError, keys, selection } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-roster-'))
   if (team !== undefined) writeFileSync(join(home, 'state.json'), JSON.stringify(team))
-  const ctx = fakeContext()
+  const services = {}
+  const ctx = fakeContext({ services })
+  const records = new Set()
+  if (keys !== undefined) Object.assign(services, keyed(ctx, new Set(keys), records))
   if (selection !== undefined) {
     const baseGet = ctx.get
     ctx.get = name => name === 'agentDefaultModel' ? { currentSelection: () => selection } : baseGet(name)
@@ -30,6 +49,7 @@ function start(team, { models = [], reasoning = {}, archiveError, selection } = 
       listProviders: () => (models.length > 0 ? [{ id: 'deepseek', name: 'DeepSeek' }] : []),
       listModels: async () => models.map(id => ({ id })),
       resolveModelInfo: async (provider, model) => reasoning[`${provider}/${model}`] ?? {},
+      ...(keys === undefined ? {} : { listConfigurableProviders: () => [{ provider: 'deepseek', displayName: 'DeepSeek', settingsNs: 'llm-deepseek', settingsPath: [] }] }),
     },
     workspaceRegistry: {
       get: id => workspaces.get(id),
@@ -67,7 +87,7 @@ function start(team, { models = [], reasoning = {}, archiveError, selection } = 
     await ctx.dispose()
     rmSync(home, { recursive: true, force: true, maxRetries: 5 })
   }
-  return { call, stop, home, sent, selected, ctx, archived, warnings }
+  return { call, stop, home, sent, selected, ctx, archived, warnings, records }
 }
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 20))
@@ -448,6 +468,293 @@ test('a hidden Bot made Main Bot shows again, and a replaced Chief drops its hel
   await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
   await settle()
   assert.equal(toChief(), greeted)
+})
+
+// A turn in a Bot Session as DSH reports it, to every listener.
+const emitIn = (ctx, sessionId, event) => { for (const listener of ctx.listeners.get('session/event')) listener({ id: sessionId }, event) }
+function runTurn(ctx, sessionId, turn, message, reason) {
+  emitIn(ctx, sessionId, { type: 'turn/start', data: { turn } })
+  emitIn(ctx, sessionId, { type: 'user/message', data: message })
+  emitIn(ctx, sessionId, { type: 'turn/end', data: { turn, reason } })
+}
+const typed = text => ({ source: { kind: 'user' }, content: [{ type: 'text', text }] })
+const failed = (code, extra = {}) => ({ kind: 'error', error: { code, message: `${code}: sk-12***34 was refused`, ...extra } })
+const botIn = async (call, id) => (await call('state', {})).value.bots.find(bot => bot.id === id)
+
+test('a model whose provider has no key is never given to a new Bot', async (t) => {
+  const { call, stop, sent, ctx } = start(undefined, { models: ['deepseek-v4-flash'], keys: [] })
+  t.after(stop)
+  const team = (await call('state', {})).value
+  assert.equal(team.models[0].needsKey, true)
+  assert.equal(team.defaultModel, null)
+  const writer = (await call('create-bot', { name: 'Writer' })).value
+  assert.equal(writer.model, undefined)
+  // A Main Bot on such a model passes it on to no Bot it creates.
+  await call('update-bot', { id: team.mainBotId, model: 'deepseek/deepseek-v4-flash' })
+  await ctx.registeredTools.get('create_bot').execute({ name: 'Editor', role: 'Editor', instructions: 'Edit.' }, { agent: { id: team.mainBotId } })
+  await settle()
+  const editor = (await call('state', {})).value.bots.find(bot => bot.name === 'Editor')
+  assert.equal(editor.model, undefined)
+  assert.deepEqual(sent.map(entry => entry.sessionId), [team.mainBotId])
+  assert.equal((await botIn(call, writer.id)).waiting, true)
+
+  assert.equal((await call('provider-key', { provider: 'deepseek', value: 'sk-test-ok' })).ok, true)
+  assert.equal((await call('state', {})).value.defaultModel, 'deepseek/deepseek-v4-flash')
+  assert.equal((await call('create-bot', { name: 'Critic' })).value.model, 'deepseek/deepseek-v4-flash')
+})
+
+test('a message the user writes before the first Main Bot has a model is answered once it has one', async (t) => {
+  const { call, stop, sent, ctx } = start(undefined, { models: ['deepseek-v4-flash'], keys: [] })
+  t.after(stop)
+  const chief = (await call('state', { locale: 'zh-CN' })).value.mainBotId
+  // The Session's own route has no key either, so that turn fails.
+  runTurn(ctx, chief, 1, typed('hello?'), failed('MISSING_CREDENTIAL'))
+  await settle()
+  let main = await botIn(call, chief)
+  assert.equal(main.waiting, true)
+  assert.equal(main.blocked.code, 'MISSING_CREDENTIAL')
+
+  // The key lifts the block; the greeting still waits for a model.
+  await call('provider-key', { provider: 'deepseek', value: 'sk-test-ok' })
+  await settle()
+  main = await botIn(call, chief)
+  assert.equal(main.blocked, undefined)
+  assert.equal(main.waiting, true)
+  assert.equal(sent.length, 0)
+
+  await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
+  await until(() => sent.length > 0)
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].message.source.role, 'kickoff')
+  assert.equal(sent[0].message.content[0].text, [
+    '[Bot team setup]',
+    'You were just set up as the user\'s Main Bot. The user wrote to you before your model could answer; their message above has no answer yet. Answer it now, and say in one short sentence that you run their Bot team. Write in Chinese (简体中文).',
+    'Where your instructions say otherwise, follow them.',
+  ].join('\n'))
+})
+
+test('a held greeting goes once a turn answered the user, and a Bot that can answer drops its own', async (t) => {
+  const { call, stop, sent, ctx } = start(undefined, { models: ['deepseek-v4-flash'], keys: [] })
+  t.after(stop)
+  const chief = (await call('state', {})).value.mainBotId
+  const writer = (await call('create-bot', { name: 'Writer' })).value
+  // DSH's own default route answered the first Main Bot.
+  runTurn(ctx, chief, 1, typed('hello?'), { kind: 'completed' })
+  emitIn(ctx, writer.id, { type: 'user/message', data: typed('hi') })
+  await settle()
+  assert.equal((await botIn(call, chief)).waiting, undefined)
+  assert.equal((await botIn(call, writer.id)).waiting, undefined)
+  await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
+  await call('update-bot', { id: writer.id, model: 'deepseek/deepseek-v4-flash' })
+  await settle()
+  assert.equal(sent.length, 0)
+})
+
+test('a greeting that fails on a key is held again and goes out once the key is set', async (t) => {
+  const { call, stop, sent, ctx } = start(undefined, { models: ['deepseek-v4-flash'], keys: [] })
+  t.after(stop)
+  const chief = (await call('state', {})).value.mainBotId
+  await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
+  await until(() => sent.length === 1)
+  runTurn(ctx, chief, 1, sent[0].message, failed('MISSING_CREDENTIAL'))
+  await settle()
+  const main = await botIn(call, chief)
+  assert.equal(main.waiting, true)
+  assert.deepEqual(Object.keys(main.blocked).sort(), ['at', 'code', 'provider'])
+  assert.equal(main.blocked.provider, 'deepseek')
+  // Setting the same model again (or only a thinking level) fixes nothing, so the
+  // greeting stays held.
+  const same = await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
+  await settle()
+  assert.equal(same.ok, true)
+  assert.equal(sent.length, 1)
+  assert.equal((await botIn(call, chief)).waiting, true)
+
+  await call('provider-key', { provider: 'deepseek', value: 'sk-test-ok' })
+  await until(() => sent.length === 2)
+  assert.equal(sent[1].message.source.role, 'kickoff')
+  assert.equal(sent[1].message.content[0].text, sent[0].message.content[0].text)
+  const after = await botIn(call, chief)
+  assert.equal(after.blocked, undefined)
+  assert.equal(after.waiting, undefined)
+})
+
+test('a Bot is blocked by the facts of a failure only the user can fix, until it is fixed', async (t) => {
+  const { call, stop, ctx } = start(undefined, { models: ['deepseek-v4-flash', 'deepseek-v4-pro'] })
+  t.after(stop)
+  const chief = (await call('state', {})).value.mainBotId
+  await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
+  runTurn(ctx, chief, 1, typed('hi'), failed('QUOTA', { status: 402, requestId: 'req-1' }))
+  await settle()
+  const { blocked } = await botIn(call, chief)
+  assert.deepEqual({ ...blocked, at: typeof blocked.at }, { code: 'QUOTA', status: 402, requestId: 'req-1', provider: 'deepseek', at: 'number' })
+  // A failure a retry can fix leaves it as it is.
+  runTurn(ctx, chief, 2, typed('again'), failed('SERVER', { status: 503 }))
+  await settle()
+  assert.equal((await botIn(call, chief)).blocked.code, 'QUOTA')
+
+  runTurn(ctx, chief, 3, typed('again'), { kind: 'completed' })
+  await settle()
+  assert.equal((await botIn(call, chief)).blocked, undefined)
+
+  runTurn(ctx, chief, 4, typed('more'), failed('AUTH', { status: 401 }))
+  await settle()
+  assert.equal((await botIn(call, chief)).blocked.code, 'AUTH')
+  // A provider that registers or changes is no fix; a key is.
+  ctx.emit('llm/adapters-updated')
+  await settle()
+  assert.equal((await botIn(call, chief)).blocked.code, 'AUTH')
+  ctx.emit('credentials/reference-updated', 'DEEPSEEK_API_KEY')
+  await settle()
+  assert.equal((await botIn(call, chief)).blocked, undefined)
+
+  runTurn(ctx, chief, 5, typed('more'), failed('ACCOUNT_SIGNED_OUT'))
+  await settle()
+  assert.equal((await botIn(call, chief)).blocked.code, 'ACCOUNT_SIGNED_OUT')
+  await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-pro' })
+  assert.equal((await botIn(call, chief)).blocked, undefined)
+})
+
+test('Retry has the Bot answer the user\'s last message without sending it again, or sends a failed greeting again', async (t) => {
+  const { call, stop, sent, ctx } = start(undefined, { models: ['deepseek-v4-flash'] })
+  t.after(stop)
+  const chief = (await call('state', {})).value.mainBotId
+  await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
+  await until(() => sent.length === 1)
+  runTurn(ctx, chief, 1, sent[0].message, failed('QUOTA', { status: 402 }))
+  await settle()
+  assert.equal((await call('resume', { botId: 'nobody' })).error.code, 'bot/not-found')
+  assert.equal((await call('resume', { botId: chief })).ok, true)
+  await until(() => sent.length === 2)
+  assert.equal(sent[1].message.source.role, 'kickoff')
+  assert.equal(sent[1].message.content[0].text, sent[0].message.content[0].text)
+
+  runTurn(ctx, chief, 2, sent[1].message, { kind: 'completed' })
+  runTurn(ctx, chief, 3, typed('Plan my week'), failed('QUOTA', { status: 402 }))
+  await settle()
+  assert.equal((await call('resume', { botId: chief })).ok, true)
+  assert.equal(sent.length, 3)
+  assert.equal(sent[2].sessionId, chief)
+  assert.equal(sent[2].message.source.role, 'continue')
+  assert.equal(sent[2].message.content[0].text, '[Retry after a failed turn]\nYour last turn failed (QUOTA) and the user has fixed it. Answer the user\'s last unanswered message.')
+  assert.equal((await botIn(call, chief)).waiting, undefined)
+})
+
+// The record a DeepSeek account sign-in writes.
+const ACCOUNT_RECORD = 'deepseek-account-platform/default'
+
+test('a sign-in lifts what a lapsed sign-in blocked and sends the held greeting; a sign-out, a key or a provider does not', async (t) => {
+  const { call, stop, sent, ctx, records } = start(undefined, { models: ['deepseek-v4-flash'], keys: ['DEEPSEEK_API_KEY'] })
+  t.after(stop)
+  const chief = (await call('state', {})).value.mainBotId
+  await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
+  await until(() => sent.length === 1)
+  // The provider refuses the token, and its record goes while the turn still runs.
+  records.add(ACCOUNT_RECORD)
+  emitIn(ctx, chief, { type: 'turn/start', data: { turn: 1 } })
+  emitIn(ctx, chief, { type: 'user/message', data: sent[0].message })
+  records.delete(ACCOUNT_RECORD)
+  ctx.emit('credentials/record-updated', ACCOUNT_RECORD)
+  emitIn(ctx, chief, { type: 'turn/end', data: { turn: 1, reason: failed('ACCOUNT_TOKEN_INVALID') } })
+  await settle()
+  ctx.emit('credentials/record-updated', ACCOUNT_RECORD)
+  ctx.emit('credentials/reference-updated', 'DEEPSEEK_API_KEY')
+  ctx.emit('llm/adapters-updated')
+  await settle()
+  let main = await botIn(call, chief)
+  assert.equal(main.blocked.code, 'ACCOUNT_TOKEN_INVALID')
+  assert.equal(main.waiting, true)
+  assert.equal(sent.length, 1)
+
+  records.add(ACCOUNT_RECORD)
+  ctx.emit('credentials/record-updated', ACCOUNT_RECORD)
+  await until(() => sent.length === 2)
+  assert.equal(sent[1].message.source.role, 'kickoff')
+  assert.equal(sent[1].message.content[0].text, sent[0].message.content[0].text)
+  main = await botIn(call, chief)
+  assert.equal(main.blocked, undefined)
+  assert.equal(main.waiting, undefined)
+})
+
+test('a held greeting goes out again only on a change that can fix its block: never a balance, a key another provider reads or a key removed', async (t) => {
+  const { call, stop, sent, ctx, records } = start(undefined, { models: ['deepseek-v4-flash'], keys: ['DEEPSEEK_API_KEY', 'OTHER_API_KEY'] })
+  t.after(stop)
+  const chief = (await call('state', {})).value.mainBotId
+  await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
+  await until(() => sent.length === 1)
+  runTurn(ctx, chief, 1, sent[0].message, failed('QUOTA', { status: 402 }))
+  await settle()
+  // A key, a sign-in, a provider registering: none of it tops up a balance.
+  records.add(ACCOUNT_RECORD)
+  for (const ref of ['OTHER_API_KEY', 'DEEPSEEK_API_KEY']) ctx.emit('credentials/reference-updated', ref)
+  ctx.emit('credentials/record-updated', ACCOUNT_RECORD)
+  ctx.emit('llm/adapters-updated')
+  await settle()
+  assert.equal(sent.length, 1)
+  assert.equal((await botIn(call, chief)).blocked.code, 'QUOTA')
+
+  // Retry sends it again, and this time the key is refused.
+  await call('resume', { botId: chief })
+  await until(() => sent.length === 2)
+  runTurn(ctx, chief, 2, sent[1].message, failed('AUTH', { status: 401 }))
+  await settle()
+  ctx.emit('credentials/reference-updated', 'OTHER_API_KEY')
+  await ctx.get('credentials').unset('DEEPSEEK_API_KEY')
+  await settle()
+  const main = await botIn(call, chief)
+  assert.equal(main.blocked.code, 'AUTH')
+  assert.equal(main.waiting, true)
+  assert.equal(sent.length, 2)
+
+  await call('provider-key', { provider: 'deepseek', value: 'sk-test-ok' })
+  await until(() => sent.length === 3)
+  assert.equal(sent[2].message.source.role, 'kickoff')
+  assert.equal((await botIn(call, chief)).blocked, undefined)
+})
+
+test('the first Main Bot keeps its greeting when the user writes while a key blocks it, and answers once the key is fixed', async (t) => {
+  // The key is set but wrong, so its model counts as usable until a turn fails on it.
+  const { call, stop, sent, ctx } = start(undefined, { models: ['deepseek-v4-flash'], keys: ['DEEPSEEK_API_KEY'] })
+  t.after(stop)
+  const chief = (await call('state', {})).value.mainBotId
+  await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
+  await until(() => sent.length === 1)
+  runTurn(ctx, chief, 1, sent[0].message, failed('AUTH', { status: 401 }))
+  runTurn(ctx, chief, 2, typed('hello?'), failed('AUTH', { status: 401 }))
+  await settle()
+  assert.equal((await botIn(call, chief)).waiting, true)
+
+  await call('provider-key', { provider: 'deepseek', value: 'sk-test-ok' })
+  await until(() => sent.length === 2)
+  assert.equal(sent[1].message.source.role, 'kickoff')
+  assert.match(sent[1].message.content[0].text, /^\[Bot team setup\]\nYou were just set up as the user's Main Bot\. The user wrote to you before your model could answer; their message above has no answer yet\./)
+})
+
+test('Retry right after a fix adds no turn while the greeting it released waits for its model, is queued or runs', async (t) => {
+  const { call, stop, sent, ctx } = start(undefined, { models: ['deepseek-v4-flash'], keys: [] })
+  t.after(stop)
+  const chief = (await call('state', {})).value.mainBotId
+  await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
+  await until(() => sent.length === 1)
+  runTurn(ctx, chief, 1, sent[0].message, failed('MISSING_CREDENTIAL'))
+  await settle()
+  // The route is slow to list, so the greeting the key releases waits for its model.
+  const listModels = ctx.llm.listModels
+  let open
+  const listed = new Promise((resolve) => { open = resolve })
+  ctx.llm.listModels = async (id) => { await listed; return listModels(id) }
+  await ctx.get('credentials').set('DEEPSEEK_API_KEY', 'sk-test-ok')
+  await settle()
+  assert.equal((await call('resume', { botId: chief })).ok, true)
+  open()
+  await until(() => sent.length === 2)
+  assert.equal((await call('resume', { botId: chief })).ok, true)
+  emitIn(ctx, chief, { type: 'turn/start', data: { turn: 2 } })
+  emitIn(ctx, chief, { type: 'user/message', data: sent[1].message })
+  assert.equal((await call('resume', { botId: chief })).ok, true)
+  emitIn(ctx, chief, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
+  await settle()
+  assert.deepEqual(sent.map(entry => entry.message.source.role), ['kickoff', 'kickoff'])
 })
 
 const takeover = (home, team) => {

@@ -70,22 +70,31 @@ function modelProfiles(from) {
   })
 }
 
-/** Whether a running DSH holds the team, as ds-bot's own lock tells (src/host/home-lock.js). */
-export function teamInUse(from, { host = hostname(), now = Date.now() } = {}) {
+/**
+ * Whether a running DSH holds the team, by the rule of ds-bot's own lock (src/host/home-lock.js):
+ * the holder bumps the lock's mtime, so a stale lock is a holder that is gone, even when its pid
+ * now belongs to another process.
+ */
+export function teamInUse(from, { host = hostname(), now = Date.now(), isAlive = pidAlive } = {}) {
   const path = join(from, 'bot', 'state.lock')
-  if (!existsSync(path)) return false
-  const fresh = now - statSync(path).mtimeMs < LOCK_STALE_MS
+  const lock = statSync(path, { throwIfNoEntry: false })
+  if (lock === undefined || now - lock.mtimeMs >= LOCK_STALE_MS) return false
   let holder
   try {
     holder = JSON.parse(readFileSync(path, 'utf8'))
   } catch {
-    return fresh
+    // Being written right now.
+    return true
   }
-  if (holder?.host !== host) return fresh
+  return holder?.host !== host || isAlive(holder.pid)
+}
+
+function pidAlive(pid) {
   try {
-    process.kill(holder.pid, 0)
+    process.kill(pid, 0)
     return true
   } catch (error) {
+    // EPERM: the process exists but belongs to someone else.
     return error?.code === 'EPERM'
   }
 }
@@ -131,12 +140,40 @@ export function newerSessions(from, team) {
     .some(name => (logVersion(name) ?? 0) > sessionFormatCatalog.currentVersion)).map(({ id }) => id)
 }
 
+// The Host's first start on the data location writes a .credentials.yaml of its own: the browser
+// session grant of the connection plugin, under client-connection/. A file with nothing else in
+// it holds no key of the user's.
+async function onlyHostRecords(file) {
+  let document
+  try {
+    document = parse(await readFile(file, 'utf8')) ?? {}
+  } catch {
+    // A file that does not read as DSH's is the user's to fix, not ours to replace.
+    return false
+  }
+  if (typeof document !== 'object' || Array.isArray(document)) return false
+  const { version, refs, records, ...other } = document
+  return (version === undefined || version === 1) && Object.keys(other).length === 0
+    && Object.keys(refs ?? {}).length === 0
+    && Object.keys(records ?? {}).every(key => key.startsWith('client-connection/'))
+}
+
+// A key file the data location has already is the user's own, saved there since, and stays;
+// a .credentials.yaml that only the Host wrote is not.
+// Returns 'copied', 'kept', or undefined when the old home has none.
 async function copyKey(from, to, name) {
   const source = join(from, name)
-  if (!existsSync(source)) return false
-  await cp(source, join(to, name))
-  if (process.platform !== 'win32') await chmod(join(to, name), 0o600)
-  return true
+  if (!existsSync(source)) return undefined
+  const target = join(to, name)
+  const replace = name === '.credentials.yaml' && existsSync(target) && await onlyHostRecords(target)
+  try {
+    await cp(source, target, { force: replace, errorOnExist: !replace })
+  } catch (error) {
+    if (error?.code === 'ERR_FS_CP_EEXIST') return 'kept'
+    throw error
+  }
+  if (process.platform !== 'win32') await chmod(target, 0o600)
+  return 'copied'
 }
 
 async function writeModelRows(to, rows) {
@@ -151,10 +188,11 @@ async function writeModelRows(to, rows) {
 /**
  * Copy the team of `from` into the data location `to`, which the Host has started on once,
  * so that DSH does not take the copied Sessions' folders for its own projects. The old team's
- * workspace files go into `workspace`, without replacing a file that is there.
+ * workspace files go into `workspace`, without replacing a file that is there, and the key
+ * files only where the data location has none of the user's own.
  * Everything but the keys, the model settings and the workspace files is put together in a
- * folder beside the data and moved in at the end; a copy that stopped or failed leaves that
- * folder behind, and the next copy removes it.
+ * folder beside the data and moved in at the end. A copy that stops or fails removes that
+ * folder; one that was killed leaves it behind, and the next copy removes it.
  * @param {{ from: string, to: string, workspace: string, profile?: string, dsh?: string, signal?: AbortSignal }} options
  */
 export async function importTeam({ from, to, workspace, profile, dsh, signal }) {
@@ -166,6 +204,14 @@ export async function importTeam({ from, to, workspace, profile, dsh, signal }) 
     await rm(join(to, name), { recursive: true, force: true })
   }
   const stage = join(to, `.import-${String(Date.now())}`)
+  try {
+    return await copyThroughStage({ found, from, to, workspace, profile, dsh, signal, stage })
+  } finally {
+    await rm(stage, { recursive: true, force: true, maxRetries: 5 }).catch((error) => { console.error(error) })
+  }
+}
+
+async function copyThroughStage({ found, from, to, workspace, profile, dsh, signal, stage }) {
   const oldBot = join(from, 'bot')
   signal?.throwIfAborted()
   await cp(oldBot, join(stage, 'bot'), { recursive: true, filter: path => !LEFT_BEHIND.has(relative(oldBot, path).split(/[\\/]/u)[0]) })
@@ -190,7 +236,13 @@ export async function importTeam({ from, to, workspace, profile, dsh, signal }) 
   }
   signal?.throwIfAborted()
   const keys = []
-  for (const name of ['.credentials.yaml', '.env']) if (await copyKey(from, to, name)) keys.push(name)
+  const keptKeys = []
+  for (const name of ['.credentials.yaml', '.env']) {
+    const done = await copyKey(from, to, name)
+    if (done === 'copied') keys.push(name)
+    if (done === 'kept') keptKeys.push(name)
+  }
+  if (keptKeys.length > 0) console.warn(`DeepSeek Bot: the import kept the ${keptKeys.join(' and ')} that the data location has`)
   const rows = found.profiles.find(entry => entry.name === profile)?.rows ?? []
   if (rows.length > 0) await writeModelRows(to, rows)
 
@@ -206,13 +258,12 @@ export async function importTeam({ from, to, workspace, profile, dsh, signal }) 
   const summary = {
     from, at: new Date().toISOString(), ...(dsh ? { dsh } : {}),
     bots: found.bots, rooms: found.rooms, sessions: sessions.length, missingSessions: missing,
-    keys, modelSettings: rows.length > 0 ? profile : null,
+    keys, keptKeys, modelSettings: rows.length > 0 ? profile : null,
   }
   signal?.throwIfAborted()
   await writeFile(join(stage, 'bot', 'imported.json'), `${JSON.stringify(summary, null, 2)}\n`)
   // Until this rename the data has no Bot team, so a copy that stopped can run again.
   await rm(join(to, 'bot'), { recursive: true, force: true })
   await rename(join(stage, 'bot'), join(to, 'bot'))
-  await rm(stage, { recursive: true, force: true })
   return summary
 }

@@ -26,6 +26,32 @@ test('the default model is the DSH default when served, else the first served mo
   assert.equal(await runtime(undefined).defaultModel(), 'deepseek/deepseek-v4.1-flash')
 })
 
+// DSH serves the models of a provider whose key is not set; every turn on them fails.
+function withoutKeys(defaultSelection, providers) {
+  const rt = runtime(defaultSelection)
+  rt.missingKeys = async () => new Set(providers)
+  return rt
+}
+
+test('a model that needs a key is never a default or a fallback, though a Bot keeps its own', async () => {
+  const rt = withoutKeys({ provider: 'deepseek', model: 'deepseek-v4-pro' }, ['deepseek'])
+  assert.equal(await rt.defaultModel(), 'ollama/kimi-k3')
+  assert.equal(rt.cachedDefault(), 'ollama/kimi-k3')
+  assert.equal(rt.isUsable('ollama/kimi-k3'), true)
+  assert.equal(rt.isUsable('deepseek/deepseek-v4-pro'), false)
+  assert.equal(rt.isUsable(undefined), false)
+  assert.equal(await rt.desiredModel({ model: 'deepseek/deepseek-v4-pro' }), 'deepseek/deepseek-v4-pro')
+  assert.equal(await rt.desiredModel({ model: 'gone/model', appliedModel: 'deepseek/deepseek-v4-pro' }), 'ollama/kimi-k3')
+  assert.equal(await rt.desiredModel({ model: 'gone/model', appliedModel: 'ollama/deepseek-v4-pro' }), 'ollama/deepseek-v4-pro')
+})
+
+test('with every model needing a key, nothing is picked', async () => {
+  const rt = withoutKeys({ provider: 'ollama', model: 'kimi-k3' }, ['deepseek', 'ollama'])
+  assert.equal(await rt.defaultModel(), undefined)
+  assert.equal(rt.cachedDefault(), undefined)
+  assert.equal(await rt.desiredModel({ model: 'gone/model', appliedModel: 'ollama/kimi-k3' }), undefined)
+})
+
 test('a model is named by its ref, or by an id or name only one provider serves', async () => {
   const rt = runtime(undefined)
   assert.equal(await rt.resolveModel('ollama/kimi-k3'), 'ollama/kimi-k3')
@@ -76,7 +102,7 @@ test('a Bot with no model yet changes nothing until the user picks one', async (
 
 // A runtime with two providers, a DSH default, and a session controller that, like
 // DSH, saves every Session selection as the default.
-function bench({ providers = { deepseek: ['v4-flash'], stepfun: ['step-5'] }, fallback = { provider: 'stepfun', model: 'step-5' }, reasoning = {} } = {}) {
+function bench({ providers = { deepseek: ['v4-flash'], stepfun: ['step-5'] }, fallback = { provider: 'stepfun', model: 'step-5' }, reasoning = {}, services = {} } = {}) {
   let current = { ...fallback }
   const selected = []
   const saved = []
@@ -85,7 +111,7 @@ function bench({ providers = { deepseek: ['v4-flash'], stepfun: ['step-5'] }, fa
     on(name, listener) { listeners.set(name, listener); return () => listeners.delete(name) },
     get: name => (name === 'agentDefaultModel'
       ? { currentSelection: () => ({ ...current }), saveSelection: async (next) => { saved.push(next); current = { ...next } } }
-      : undefined),
+      : services[name]),
     llm: {
       listProviders: () => Object.keys(providers).map(id => ({ id, name: id.toUpperCase() })),
       listModels: async id => providers[id].map(model => ({ id: model, name: model, inputModalities: ['text'] })),
@@ -173,6 +199,58 @@ test('a greeting waits for the provider of its Bot model to register', async () 
   }, 20)
   assert.equal(await waiting, 'stepfun/step-5')
   assert.equal(await rt.waitForModel({}, 5000), undefined)
+})
+
+test('a key set or a sign-in lifts what blocked a Bot; a key removed, a sign-out, a provider or a settings change only re-reads', async () => {
+  const keys = new Set(['DEEPSEEK_API_KEY'])
+  const records = new Set(['deepseek-account-platform/default'])
+  const credentials = {
+    describe: async ref => ({ configured: keys.has(ref), writable: true }),
+    describeRecord: async key => ({ configured: records.has(key), writable: true }),
+  }
+  const { rt, listeners, providers } = bench({ services: { credentials } })
+  const lifted = []
+  // Each listing also passes the providers listed with their key (the next test).
+  rt.unblockBots = fix => { if (fix.keyed === undefined) lifted.push(fix) }
+  await rt.catalog()
+  providers.deepseek = ['v4-pro']
+  await listeners.get('credentials/reference-updated')('DEEPSEEK_API_KEY')
+  assert.ok((await rt.catalog()).some(entry => entry.ref === 'deepseek/v4-pro'))
+  await listeners.get('credentials/reference-updated')('STEPFUN_API_KEY')
+  // Another plugin's record, such as an OAuth token refresh, is no sign-in.
+  await listeners.get('credentials/record-updated')('llm-pi-ai/github-copilot')
+  providers.deepseek = ['v4-flash']
+  await listeners.get('credentials/record-updated')('deepseek-account-platform/default')
+  assert.ok((await rt.catalog()).some(entry => entry.ref === 'deepseek/v4-flash'))
+  // The provider refused the token and its record went.
+  records.clear()
+  await listeners.get('credentials/record-updated')('deepseek-account-platform/default')
+  listeners.get('llm/adapters-updated')()
+  listeners.get('settings/document-updated')()
+  assert.deepEqual(lifted, [{ ref: 'DEEPSEEK_API_KEY' }, { signedIn: true }])
+})
+
+test('every listing passes the providers listed with their key, so a key that came without an event still lifts', async () => {
+  const { rt, providers } = bench()
+  providers.stepfun = ['step-5']
+  rt.missingKeys = async () => new Set(['stepfun'])
+  const passed = []
+  rt.unblockBots = fix => passed.push([...fix.keyed].sort())
+  await rt.catalog({ fresh: true })
+  rt.missingKeys = async () => new Set()
+  await rt.catalog({ fresh: true })
+  assert.equal(passed.length, 2)
+  assert.equal(passed[0].includes('stepfun'), false)
+  assert.equal(passed[1].includes('stepfun'), true)
+})
+
+test('a credential DSH cannot describe counts as there, so its fix still lifts', async () => {
+  const { rt, listeners } = bench({ services: { credentials: { describe: async () => { throw new Error('locked') } } } })
+  const lifted = []
+  rt.unblockBots = fix => { if (fix.keyed === undefined) lifted.push(fix) }
+  await listeners.get('credentials/reference-updated')('DEEPSEEK_API_KEY')
+  await listeners.get('credentials/record-updated')('deepseek-account-platform/default')
+  assert.deepEqual(lifted, [{ ref: 'DEEPSEEK_API_KEY' }, { signedIn: true }])
 })
 
 test('a Bot on the default model with its own thinking level leaves the default level as it was', async () => {

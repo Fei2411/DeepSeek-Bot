@@ -59,10 +59,11 @@ const feed = `http://127.0.0.1:${String(server.address().port)}/`
 // The tray's Quit ends the app. The check cannot click the tray icon, so it asks the browser
 // target of the debugging port to close. Tray menu dispatch is covered by the main-process tests.
 async function quitApp(port, waitForReady = false) {
-  // Until the Host is ready the window shows a note of its own.
+  // Until the Host is ready only the start window is there (a file: page); the team window
+  // loads the Host's address once the engine is up.
   const find = async () => {
     const targets = await (await fetch(`http://127.0.0.1:${String(port)}/json/list`)).json()
-    const pages = targets.filter(target => target.type === 'page' && (/^http:\/\/127\.0\.0\.1:\d+\//u.test(target.url) || target.url.startsWith('data:text/html')))
+    const pages = targets.filter(target => target.type === 'page' && (/^http:\/\/127\.0\.0\.1:\d+\//u.test(target.url) || /\/src\/start\/start\.html\?start=/u.test(target.url)))
     return pages.find(target => target.url.startsWith('http:')) ?? (waitForReady ? undefined : pages[0])
   }
   let page = await find()

@@ -13,6 +13,8 @@ const write = (path, text) => {
   writeFileSync(path, text)
 }
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'))
+// The import's stage folders in a data location.
+const staged = to => readdirSync(to).filter(name => /^\.import-\d+$/u.test(name))
 
 function treeHash(dir) {
   const hash = createHash('sha256')
@@ -71,11 +73,19 @@ function oldHome(root) {
   return from
 }
 
+// What the Host's first start writes to the data location's .credentials.yaml: the connection
+// plugin's browser session grant, and nothing else.
+const HOST_CREDENTIALS = [
+  'version: 1', 'records:', '  client-connection/browser-session:', '    kind: grant', '    payload:',
+  '      version: 1', `      secret: ${'A'.repeat(43)}`, '',
+].join('\n')
+
 // The app's data location after the Host's first start, and the folder chosen for the Bots' files.
 function newHome(root) {
   const to = join(root, 'ds-bot')
   write(join(to, 'bot', 'state.json'), JSON.stringify({ version: 1, mainBotIds: [], bots: {}, rooms: {} }))
-  write(join(to, 'profiles', 'ds-bot', 'cordis.patch.yml'), '- id: llm-pi-ai\n  config:\n    providers: {}\n- id: webserver\n  config:\n    port: 0\n')
+  write(join(to, '.credentials.yaml'), HOST_CREDENTIALS)
+  write(join(to, 'profiles', 'ds-bot', 'cordis.patch.yml'), '- id: llm-pi-ai\n  config:\n    providers: {}\n- id: webserver\n  config:\n    port: 0\n- id: ui-settings-general\n  config:\n    welcomeNoticeVersion: seen\n')
   const workspace = join(root, 'DeepSeek Bot')
   write(join(workspace, 'kept.txt'), 'new kept')
   return { to, workspace }
@@ -117,8 +127,10 @@ describe('importTeam', () => {
     assert.equal(readFileSync(join(to, '.credentials.yaml'), 'utf8'), 'DEEPSEEK_API_KEY: fake\n')
     assert.equal(readFileSync(join(to, '.env'), 'utf8'), 'X=1\n')
     const patch = parse(readFileSync(join(to, 'profiles', 'ds-bot', 'cordis.patch.yml'), 'utf8'))
-    assert.deepEqual(patch.map(row => row.id), ['webserver', 'llm-pi-ai', 'agent-default-model'])
-    assert.deepEqual(patch[1].config.providers, { moonshotai: { apiKeyEnv: 'MOONSHOTAI_API_KEY' } })
+    // The data location's other rows stay, such as the Settings page's own.
+    assert.deepEqual(patch.map(row => row.id), ['webserver', 'ui-settings-general', 'llm-pi-ai', 'agent-default-model'])
+    assert.deepEqual(patch[1].config, { welcomeNoticeVersion: 'seen' })
+    assert.deepEqual(patch[2].config.providers, { moonshotai: { apiKeyEnv: 'MOONSHOTAI_API_KEY' } })
   })
 
   test('puts the old workspace files in the chosen folder without replacing one that is there', () => {
@@ -130,7 +142,7 @@ describe('importTeam', () => {
     const record = readJson(join(to, 'bot', 'imported.json'))
     assert.deepEqual({ ...record, at: undefined }, {
       from, at: undefined, dsh: '0.2.0-rc.2', bots: 2, rooms: 1, sessions: 6, missingSessions: ['session-gone'],
-      keys: ['.credentials.yaml', '.env'], modelSettings: 'desktop',
+      keys: ['.credentials.yaml', '.env'], keptKeys: [], modelSettings: 'desktop',
     })
     assert.deepEqual(readdirSync(to).filter(name => name.startsWith('.import-')), [])
     assert.equal(treeHash(from), oldTree)
@@ -157,7 +169,7 @@ describe('a copy that stopped', () => {
     assert.equal(summary.sessions, 6)
     assert.deepEqual(Object.keys(readJson(join(to, 'bot', 'state.json')).bots), ['session-a', 'session-b'])
     assert.equal(readFileSync(join(to, 'sessions', '--site--', 'session-b', 'session.v4.jsonl.zstd'), 'utf8'), 'session-b')
-    assert.deepEqual(readdirSync(to).filter(name => /^\.import-\d+$/u.test(name)), [])
+    assert.deepEqual(staged(to), [])
   })
 
   test('a stopped copy leaves no Bot team', async () => {
@@ -165,6 +177,7 @@ describe('a copy that stopped', () => {
     mkdirSync(to, { recursive: true })
     await assert.rejects(importTeam({ from, to, workspace: join(root, 'stopped-files'), signal: AbortSignal.abort() }), { name: 'AbortError' })
     assert.equal(existsSync(join(to, 'bot')), false)
+    assert.deepEqual(staged(to), [])
   })
 
   test('a quit during the move-in leaves no Bot team, and the next copy finishes', async () => {
@@ -181,11 +194,64 @@ describe('a copy that stopped', () => {
     await assert.rejects(importTeam({ from, to, workspace, signal }), { name: 'AbortError' })
     assert.equal(Object.keys(readJson(join(to, 'bot', 'state.json')).bots).length, 0)
     assert.equal(existsSync(movedIn), true)
+    assert.deepEqual(staged(to), [])
     const summary = await importTeam({ from, to, workspace })
     assert.equal(summary.sessions, 6)
     assert.deepEqual(Object.keys(readJson(join(to, 'bot', 'state.json')).bots), ['session-a', 'session-b'])
     assert.equal(readFileSync(join(movedIn, 'session.v4.jsonl.zstd'), 'utf8'), 'session-a')
-    assert.deepEqual(readdirSync(to).filter(name => /^\.import-\d+$/u.test(name)), [])
+    assert.deepEqual(staged(to), [])
+  })
+
+  test('a copy that failed part way removes what it staged and leaves no Bot team', async () => {
+    const { to } = newHome(join(root, 'failed'))
+    // The folder for the Bots' files is a file: the copy fails once the team is staged.
+    const workspace = join(root, 'failed', 'a-file')
+    write(workspace, 'not a folder')
+    await assert.rejects(importTeam({ from, to, workspace }))
+    assert.deepEqual(staged(to), [])
+    assert.equal(Object.keys(readJson(join(to, 'bot', 'state.json')).bots).length, 0)
+  })
+})
+
+describe('keys the data location has already', () => {
+  let root
+  before(() => { root = mkdtempSync(join(tmpdir(), 'ds-bot-app-keys-')) })
+  after(() => { rmSync(root, { recursive: true, force: true }) })
+
+  const importOver = async (name, credentials) => {
+    const from = oldHome(join(root, name))
+    const { to, workspace } = newHome(join(root, name))
+    write(join(to, '.credentials.yaml'), credentials)
+    return { to, summary: await importTeam({ from, to, workspace }) }
+  }
+
+  test('copies the old keys over the .credentials.yaml that only the Host\'s first start wrote', async () => {
+    const { to, summary } = await importOver('host', HOST_CREDENTIALS)
+    assert.equal(readFileSync(join(to, '.credentials.yaml'), 'utf8'), 'DEEPSEEK_API_KEY: fake\n')
+    assert.deepEqual(summary.keys, ['.credentials.yaml', '.env'])
+    assert.deepEqual(summary.keptKeys, [])
+  })
+
+  test('keeps a .credentials.yaml with a key saved since, copies the rest and reports which it kept', async () => {
+    const saved = `${HOST_CREDENTIALS}refs:\n  DEEPSEEK_API_KEY: saved-since\n`
+    const { to, summary } = await importOver('saved', saved)
+    assert.equal(readFileSync(join(to, '.credentials.yaml'), 'utf8'), saved)
+    assert.equal(readFileSync(join(to, '.env'), 'utf8'), 'X=1\n')
+    assert.deepEqual(summary.keys, ['.env'])
+    assert.deepEqual(summary.keptKeys, ['.credentials.yaml'])
+    assert.deepEqual(readJson(join(to, 'bot', 'imported.json')).keptKeys, ['.credentials.yaml'])
+  })
+
+  test('keeps one with an account sign-in, in the old flat layout or that does not read as YAML', async () => {
+    for (const [name, text] of [
+      ['account', `${HOST_CREDENTIALS}  deepseek-account-platform/default:\n    kind: grant\n    payload:\n      token: saved-since\n`],
+      ['flat', 'DEEPSEEK_API_KEY: saved-since\n'],
+      ['broken', 'refs: [unclosed\n'],
+    ]) {
+      const { to, summary } = await importOver(name, text)
+      assert.equal(readFileSync(join(to, '.credentials.yaml'), 'utf8'), text, name)
+      assert.deepEqual(summary.keptKeys, ['.credentials.yaml'], name)
+    }
   })
 })
 
@@ -272,6 +338,23 @@ describe('finding the team', () => {
     const old = new Date(Date.now() - 120_000)
     utimesSync(lock, old, old)
     assert.equal(teamInUse(from, { host: 'here' }), false)
+    write(lock, '{"pid": ')
+    assert.equal(teamInUse(from, { host: 'here' }), true, 'a lock being written')
+    rmSync(lock)
+    assert.equal(teamInUse(from, { host: 'here' }), false)
+  })
+
+  // #428: the pid of a holder that crashed long ago now belongs to another process.
+  test('does not take a stale lock on this machine for in use, even when its pid is alive', () => {
+    const lock = join(from, 'bot', 'state.lock')
+    write(lock, JSON.stringify({ pid: process.pid, host: 'here' }))
+    const at = statSync(lock).mtimeMs
+    assert.equal(teamInUse(from, { host: 'here', now: at + 59_000 }), true)
+    assert.equal(teamInUse(from, { host: 'here', now: at + 60_000 }), false)
+    assert.equal(teamInUse(from, { host: 'here', now: at + 59_000, isAlive: () => false }), false)
+    const asked = []
+    assert.equal(teamInUse(from, { host: 'here', now: at + 120_000, isAlive: (pid) => { asked.push(pid); return true } }), false)
+    assert.deepEqual(asked, [])
   })
 
   test('reads DSH_HOME as DSH does', () => {

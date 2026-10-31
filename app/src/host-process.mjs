@@ -23,8 +23,9 @@ export class HostProcess {
   #messageListeners = new Set()
 
   /**
-   * @param {{ entry: string, cwd: string, env: NodeJS.ProcessEnv, pnpm: string, onFailure: (error: Error) => void }} options
-   *   `onFailure` receives the first unexpected failure, also after the Host was ready.
+   * @param {{ entry: string, cwd: string, env: NodeJS.ProcessEnv, pnpm: string, onFailure: (error: Error) => void, output?: (stream: 'stdout' | 'stderr', text: string) => void }} options
+   *   `onFailure` receives the first unexpected failure, also after the Host was ready. `output`
+   *   takes the Host's output with the launch token hidden; by default it goes to this process's.
    */
   constructor(options) { this.#options = options }
 
@@ -34,16 +35,16 @@ export class HostProcess {
    */
   start() {
     this.#ready ??= new Promise((resolve, reject) => {
-      const { entry, cwd, env, pnpm } = this.#options
+      const { entry, cwd, env, pnpm, output = (stream, text) => { process[stream].write(text) } } = this.#options
       const child = spawn(process.execPath, ['--expose-internals', entry, pnpm], {
         cwd, env: { ...env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       })
       this.#child = child
       child.stdout.setEncoding('utf8')
       child.stderr.setEncoding('utf8')
-      child.stdout.on('data', (chunk) => { process.stdout.write(redact(chunk)) })
+      child.stdout.on('data', (chunk) => { output('stdout', redact(chunk)) })
       child.stderr.on('data', (chunk) => {
-        process.stderr.write(redact(chunk))
+        output('stderr', redact(chunk))
         this.#stderr = (this.#stderr + chunk).slice(-STDERR_TAIL_CHARS)
       })
       child.on('message', (message) => {
@@ -71,13 +72,20 @@ export class HostProcess {
     this.#child.send(message)
   }
 
-  /** Ask the Host to shut down, then end it if it does not exit in time. */
-  async stop() {
+  /**
+   * Ask the Host to shut down, then end it if it does not exit in time. With `now`, it is ended
+   * at once instead: a start that goes on in another folder has no use for this Host's boot or
+   * for an orderly shutdown of its data, which goes away with it.
+   */
+  async stop({ now = false } = {}) {
     const child = this.#child
     if (child === undefined) return
     this.#stopping = true
-    if (child.connected) child.send({ type: 'shutdown' }, (error) => { if (error) console.error(error) })
-    if (!await settlesWithin(this.#exit, 10_000)) child.kill()
+    if (now) child.kill()
+    else {
+      if (child.connected) child.send({ type: 'shutdown' }, (error) => { if (error) console.error(error) })
+      if (!await settlesWithin(this.#exit, 10_000)) child.kill()
+    }
     if (!await settlesWithin(this.#exit, 5_000)) child.kill('SIGKILL')
     this.#child = undefined
   }
