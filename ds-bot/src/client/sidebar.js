@@ -336,31 +336,77 @@ export function TeamSidebar(props) {
   useEffect(() => () => { if (typeof document !== 'undefined') chatRoom.setLeft(null) }, [])
 
   // The edge drag: live while the pointer moves, the column's new state on release.
+  // Per frame the drag writes the column's own inline style and each conversation
+  // column's inline margin — the same path the panel's resize takes — so nothing
+  // re-renders or restyles the chat while the pointer moves. A render only happens
+  // when the drag crosses the rail's snap line, and the first crossing arms the
+  // spring (`data-folding`) so the fold glides instead of jumping.
+  const settleTimer = useRef(0)
   const startDrag = (event) => {
     if (event.button !== 0) return
     event.preventDefault()
+    clearTimeout(settleTimer.current)
     const grip = event.currentTarget
+    const column = grip.parentElement
     grip.setPointerCapture?.(event.pointerId)
     chatRoom.hold(true)
+    const columns = chatRoom.columns()
+    for (const col of columns) col.style.setProperty('transition', 'none', 'important')
+    const offLeft = frameSnap.collapsedWidth ?? 0
     let last = null
+    let liveLeft = mode
+    let folded = false
     let done = false
-    const onMove = (move) => { last = dragColumn(move.clientX, window.innerWidth); setDrag(last) }
+    const write = (at) => {
+      const width = at.left === 'rail' ? RAIL_WIDTH : at.width
+      column.style.width = `${width}px`
+      column.style.setProperty('--bt-lc-w', `${width}px`)
+      const push = Math.max(0, (at.left === 'open' ? width : RAIL_WIDTH) - offLeft)
+      for (const col of columns) col.style.setProperty('margin-left', `${push}px`, 'important')
+    }
+    const track = (x) => {
+      last = dragColumn(x, window.innerWidth)
+      if (last.left !== liveLeft) {
+        if (!folded && !reducedMotion()) {
+          folded = true
+          column.dataset.folding = ''
+          for (const col of columns) col.style.setProperty('transition', `margin-left ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing}`, 'important')
+        }
+        liveLeft = last.left
+        setDrag(last)
+      }
+      write(last)
+    }
+    const onMove = (move) => track(move.clientX)
+    // The rules and props take the landed geometry back over; while the fold's
+    // spring still runs this waits it out so the landing does not snap.
+    const finish = () => {
+      if (column.isConnected && last !== null) chatRoom.setLeft(Math.max(0, (last.left === 'open' ? last.width : RAIL_WIDTH) - offLeft))
+      for (const col of columns) { col.style.removeProperty('margin-left'); col.style.removeProperty('transition') }
+      column.style.removeProperty('width')
+      column.style.removeProperty('--bt-lc-w')
+      delete column.dataset.folding
+      chatRoom.hold(false)
+    }
     const ends = ['pointerup', 'pointercancel', 'lostpointercapture']
     const onEnd = (end) => {
       if (done) return
       done = true
-      if (end.type === 'pointerup') last = dragColumn(end.clientX, window.innerWidth)
+      if (end.type === 'pointerup') track(end.clientX)
       grip.removeEventListener('pointermove', onMove)
       for (const name of ends) grip.removeEventListener(name, onEnd)
       setDrag(null)
-      chatRoom.hold(false)
-      if (last === null) return
+      if (last === null) { finish(); return }
       // The drag is the latest explicit gesture: it takes back a yielded panel's room.
       actions.setPanelYield?.(false)
-      if (last.left === 'rail') { actions.setLeftDrawer?.(false); actions.setSidebarPref?.('rail'); return }
-      actions.setSidebarWidth?.(last.width)
-      actions.setSidebarPref?.('open')
-      actions.setLeftDrawer?.(last.left === 'drawer')
+      if (last.left === 'rail') { actions.setLeftDrawer?.(false); actions.setSidebarPref?.('rail') }
+      else {
+        actions.setSidebarWidth?.(last.width)
+        actions.setSidebarPref?.('open')
+        actions.setLeftDrawer?.(last.left === 'drawer')
+      }
+      if (!folded) finish()
+      else settleTimer.current = setTimeout(finish, SPRING_SHAPE.duration + 60)
     }
     grip.addEventListener('pointermove', onMove)
     for (const name of ends) grip.addEventListener(name, onEnd)

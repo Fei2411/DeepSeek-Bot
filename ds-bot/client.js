@@ -2562,6 +2562,11 @@ html[data-bt-collapsing] [class*="_frame"]:has(>[class*="_sidebarCol"]){transiti
    edge need room beside the 56px rows, or the list scrolls sideways. */
 .bt-leftcol[data-left=rail]{padding:calc(var(--bt-lc-clear) + 8px) 0 8px}
 .bt-leftcol-foot-rail{flex-direction:column;gap:6px}
+/* A drag that crosses the rail's snap line rides the spring to its target: the
+   content is pinned at the target size so only the column's edge moves. */
+.bt-leftcol[data-folding]{overflow:hidden;transition:width ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing}}
+.bt-leftcol[data-folding]>.bt-side{flex:none;width:calc(var(--bt-lc-w) - 24px)}
+.bt-leftcol[data-left=rail][data-folding]>.bt-side{width:var(--bt-lc-w);margin-inline:auto}
 .bt-dot{position:absolute;top:4px;right:8px;width:8px;height:8px;border-radius:50%;background:var(--bt-accent);box-shadow:0 0 0 1.5px var(--bt-sidebar)}
 .bt-dot-wait{background:var(--bt-star)}
 .bt-side-foot{display:flex;padding-top:8px}
@@ -9553,37 +9558,77 @@ function TeamSidebar(props) {
   (0, import_react18.useEffect)(() => () => {
     if (typeof document !== "undefined") chatRoom.setLeft(null);
   }, []);
+  const settleTimer = (0, import_react18.useRef)(0);
   const startDrag = (event) => {
     if (event.button !== 0) return;
     event.preventDefault();
+    clearTimeout(settleTimer.current);
     const grip = event.currentTarget;
+    const column = grip.parentElement;
     grip.setPointerCapture?.(event.pointerId);
     chatRoom.hold(true);
+    const columns2 = chatRoom.columns();
+    for (const col of columns2) col.style.setProperty("transition", "none", "important");
+    const offLeft = frameSnap.collapsedWidth ?? 0;
     let last = null;
+    let liveLeft = mode;
+    let folded = false;
     let done = false;
-    const onMove = (move) => {
-      last = dragColumn(move.clientX, window.innerWidth);
-      setDrag(last);
+    const write = (at) => {
+      const width = at.left === "rail" ? RAIL_WIDTH : at.width;
+      column.style.width = `${width}px`;
+      column.style.setProperty("--bt-lc-w", `${width}px`);
+      const push = Math.max(0, (at.left === "open" ? width : RAIL_WIDTH) - offLeft);
+      for (const col of columns2) col.style.setProperty("margin-left", `${push}px`, "important");
+    };
+    const track = (x) => {
+      last = dragColumn(x, window.innerWidth);
+      if (last.left !== liveLeft) {
+        if (!folded && !reducedMotion()) {
+          folded = true;
+          column.dataset.folding = "";
+          for (const col of columns2) col.style.setProperty("transition", `margin-left ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing}`, "important");
+        }
+        liveLeft = last.left;
+        setDrag(last);
+      }
+      write(last);
+    };
+    const onMove = (move) => track(move.clientX);
+    const finish = () => {
+      if (column.isConnected && last !== null) chatRoom.setLeft(Math.max(0, (last.left === "open" ? last.width : RAIL_WIDTH) - offLeft));
+      for (const col of columns2) {
+        col.style.removeProperty("margin-left");
+        col.style.removeProperty("transition");
+      }
+      column.style.removeProperty("width");
+      column.style.removeProperty("--bt-lc-w");
+      delete column.dataset.folding;
+      chatRoom.hold(false);
     };
     const ends = ["pointerup", "pointercancel", "lostpointercapture"];
     const onEnd = (end) => {
       if (done) return;
       done = true;
-      if (end.type === "pointerup") last = dragColumn(end.clientX, window.innerWidth);
+      if (end.type === "pointerup") track(end.clientX);
       grip.removeEventListener("pointermove", onMove);
       for (const name of ends) grip.removeEventListener(name, onEnd);
       setDrag(null);
-      chatRoom.hold(false);
-      if (last === null) return;
+      if (last === null) {
+        finish();
+        return;
+      }
       actions.setPanelYield?.(false);
       if (last.left === "rail") {
         actions.setLeftDrawer?.(false);
         actions.setSidebarPref?.("rail");
-        return;
+      } else {
+        actions.setSidebarWidth?.(last.width);
+        actions.setSidebarPref?.("open");
+        actions.setLeftDrawer?.(last.left === "drawer");
       }
-      actions.setSidebarWidth?.(last.width);
-      actions.setSidebarPref?.("open");
-      actions.setLeftDrawer?.(last.left === "drawer");
+      if (!folded) finish();
+      else settleTimer.current = setTimeout(finish, SPRING_SHAPE.duration + 60);
     };
     grip.addEventListener("pointermove", onMove);
     for (const name of ends) grip.addEventListener(name, onEnd);
