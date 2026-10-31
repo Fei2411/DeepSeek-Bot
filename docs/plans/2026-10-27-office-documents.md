@@ -45,7 +45,7 @@ DSH 的六个格式/操作技能（office-docx/pptx/xlsx、office-render、offic
 
 ## 各运行面的运行时
 
-- 桌面应用：全部可用——payload 的 Python/Node/LibreOffice、DSH 的 Office 技能、`office.js` 全部命令（host 注入 `DS_BOT_OFFICE_NODE`，office.js 走 `app.asar.unpacked`）
+- 桌面应用：全部可用——payload 的 Python/Node/LibreOffice、DSH 的 Office 技能、`office.js` 全部命令（host 注入 `DS_BOT_OFFICE_NODE`；应用不打 asar，office.js 是普通文件，#679）
 - DSH Desktop：DSH 自带的 Python 和渲染器照常，外加我们的 `office.js` 命令（纯 Node 宿主用宿主解释器；否则技能文本指示调 `load_workspace_dependencies` 取 node）
 - DSH Web：只有 `office.js` 命令——没有随包的 Python（建新文件受限），没有渲染器（除非用户自己装 DSH 提供的 Office sidecar）
 

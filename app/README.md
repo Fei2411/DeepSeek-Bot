@@ -77,12 +77,12 @@ Never point `DS_BOT_HOME` at `~/.dsh` or at the data of an app that you use.
 
 ## Package
 
-[electron-builder](https://www.electron.build/) packages the app with the settings in `electron-builder.yml`. Build on the platform that you package for: the native modules (`node-pty`, `sharp`, `koffi`) are taken from `node_modules` as npm installed them, not rebuilt.
+[electron-builder](https://www.electron.build/) packages the app with the settings in `electron-builder.yml`. Build on the platform that you package for: the native modules (`node-pty`, `sharp`, `koffi`) are taken from `node_modules` as npm installed them, not rebuilt. The app stays plain files in `resources/app`, not an asar archive: packages start programs that they ship, such as pnpm and the LibreOffice engine of file previews, by paths next to their own files, and Electron cannot start a program from inside an archive (#679).
 
 ```sh
 npm run pack           # the app without an installer: dist-pack/win-unpacked/ (Windows), dist-pack/mac*/ (macOS), dist-pack/linux-unpacked/ (Linux)
 npm run dist           # the installer: dist-pack/DeepSeek-Bot-<version>-win-x64.exe (Windows), a .zip (macOS), an .AppImage and a .deb (Linux)
-npm run check-packed   # starts the packaged app on throwaway folders with the mock model, chats once, closes it
+npm run check-packed   # converts an image and a Word document with the packaged sharp and LibreOffice engine, starts the packaged app on throwaway folders with the mock model, chats once, closes it
 ```
 
 macOS produces one zip per architecture. Build arm64 on an Apple chip Mac and x64 on an Intel Mac, or under Rosetta with an x64 Node that also ran `npm ci`. Do not cross-build: it packages native modules from `node_modules`; a combined build put 12 arm64-only native modules in its x64 app. `scripts/before-pack.mjs` stops a build whose architecture is not the one of the Node that runs it. The app is ad-hoc signed so downloaded copies are sealed. It ships as a zip, not a dmg: macOS 26 calls a downloaded unsigned dmg damaged and does not open it, and an ad-hoc signature on the dmg does not help (#351). Safari unzips the download; move DeepSeek Bot to Applications. On first open, use System Settings → Privacy & Security → Open Anyway. Do not disable Gatekeeper.

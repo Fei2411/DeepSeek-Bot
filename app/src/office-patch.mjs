@@ -1,5 +1,5 @@
 // Reconcile #613: the app carries DSH's Office runtime — the workspace-dependencies tool and
-// the seven Office skills — in build/runtime (development) or beside the asar (packaged).
+// the seven Office skills — in build/runtime (development) or beside the app's folder (packaged).
 // DSH's own profile does not mount them, so when the payload is complete the Host adds them
 // through a `--patch` overlay it writes into its own data area next to the profiles
 // (`<DSH_HOME>/profiles/office.patch.yml`), which DSH reads only through `patchFiles`.
@@ -26,8 +26,9 @@ export function officeRuntime(runtimeDir) {
   return { source, node }
 }
 
-// The payload's Node is a plain interpreter: it cannot read through the asar archive, so the
-// CLI must come from the unpacked tree electron-builder writes beside it.
+// The payload's Node is a plain interpreter: it cannot read through an asar archive, so a CLI
+// inside one must come from the unpacked tree beside it. The app itself ships without an archive
+// (#679), where the path stays as it is.
 export function officeCli(manifest = fileURLToPath(import.meta.resolve('@deepseek-ai/libreoffice-kit/package.json'))) {
   return join(dirname(manifest).replace(`${sep}app.asar${sep}`, `${sep}app.asar.unpacked${sep}`), 'lib', 'cli.js')
 }

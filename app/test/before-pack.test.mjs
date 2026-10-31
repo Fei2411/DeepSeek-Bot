@@ -39,7 +39,7 @@ test('electron-builder runs the check before it packs', () => {
   assert.match(readFileSync(new URL('../electron-builder.yml', import.meta.url), 'utf8'), /^beforePack: \.\/scripts\/before-pack\.mjs$/m)
 })
 
-test('the Office payload goes next to the asar for a platform the lock pins', () => {
+test('the Office payload goes next to the app for a platform the lock pins', () => {
   const request = officeRuntimeRequest({ arch: Arch.x64, electronPlatformName: 'win32', packager: { projectDir: 'app-dir', appInfo: { version: '9.9.9' } } })
   assert.equal(request.target, 'win-x64')
   assert.equal(request.version, '9.9.9')

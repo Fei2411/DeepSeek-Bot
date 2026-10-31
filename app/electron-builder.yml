@@ -8,17 +8,14 @@ files:
   - package.json
   - src/**
   - assets/**
-# The Host runs pnpm as a separate Node process to install plugins, and the Office payload's
-# plain Node runs the LibreOffice Kit CLI: both must be plain files outside the asar.
-asarUnpack:
-  - node_modules/pnpm/**
-  - node_modules/@deepseek-ai/libreoffice-kit/**
-  # The payload Node cannot read office.js through the asar.
-  - node_modules/ds-bot/office.js
-  # Automatic unpacking misses versioned Linux libraries such as libvips-cpp.so.8.18.7.
-  - node_modules/@img/sharp*/**
+# No asar archive: the app stays plain files. Packages start programs that they ship by paths
+# next to their own files: the Host runs pnpm to install plugins, and file previews run the
+# LibreOffice engine. Electron cannot start a program by a path inside an archive, even when
+# the program itself is unpacked (#679). The Office payload's plain Node also reads the
+# LibreOffice Kit CLI and ds-bot's office.js from here, which it could not do through an archive.
+asar: false
 # The Office payload that scripts/prepare-runtime.mjs writes in beforePack (see package.json's
-# `runtime` script). build/ is not in `files`, so nothing of it lands inside the asar.
+# `runtime` script). build/ is not in `files`, so none of it lands in the app's own folder.
 extraResources:
   - from: build/runtime/primary-runtime
     to: primary-runtime

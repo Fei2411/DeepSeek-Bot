@@ -21,7 +21,7 @@ export function archProblem({ target, platform, host = process.arch, targets = [
 }
 
 /**
- * The Office payload the package ships next to the asar through extraResources; it must
+ * The Office payload the package ships next to the app's folder through extraResources; it must
  * match the package's own platform and architecture, which the arch check guarantees.
  * @param {*} context - electron-builder's beforePack context.
  * @returns {{ target: string, output: string, cache: string, version: string }}
