@@ -870,6 +870,9 @@ var ZH = {
   "Recognizing…": "识别中…",
   "Voice input needs its speech model": "语音输入还没有语音模型",
   "Set up voice input": "设置语音输入",
+  "Preparing voice input…": "正在准备语音输入…",
+  "Downloading the speech model… {pct}%": "正在下载语音模型… {pct}%",
+  "Couldn't prepare voice input": "语音输入准备失败",
   "That was too long to recognize": "这段太长了，识别不了",
   // Usage page
   "24 hours": "24 小时",
@@ -11006,6 +11009,24 @@ async function speechCatalog(speech) {
   const provider = catalog.providers.find((item) => item.id === catalog.selection.providerId);
   return { catalog, usable: USABLE.has(provider?.preparation?.phase) };
 }
+async function requestPreparation(speech, providerId) {
+  try {
+    const result = await speech.prepare(providerId);
+    return result?.ok !== false;
+  } catch {
+    return false;
+  }
+}
+function preparationStep(catalog) {
+  const preparation = catalog.providers.find((item) => item.id === catalog.selection.providerId)?.preparation;
+  if (preparation === void 0) return { state: "done", failed: false };
+  if (USABLE.has(preparation.phase)) return { state: "usable" };
+  if (preparation.phase === "failed" || preparation.phase === "cancelled" || preparation.phase === "unprepared") {
+    return { state: "done", failed: preparation.phase === "failed" };
+  }
+  const pct = preparation.phase === "downloading" && preparation.totalBytes ? Math.floor(preparation.completedBytes / preparation.totalBytes * 100) : void 0;
+  return { state: "waiting", pct };
+}
 function waveBytes(samples, rate = 16e3) {
   const bytes = new Uint8Array(44 + samples.length * 2);
   const view = new DataView(bytes.buffer);
@@ -11106,6 +11127,14 @@ async function transcribeWave(speech, catalog, wave, signal) {
   const result = await speech.transcribe({ audioBase64: base64Of(wave), ...catalog.selection }, signal);
   if (!result?.ok) throw Object.assign(new Error(result?.error?.message ?? "Transcription failed"), { kind: "service" });
   return String(result.value?.text ?? "").trim();
+}
+function closingReplyText(chat, turn) {
+  const location2 = chat?.timeline?.turns?.get(turn);
+  if (location2 === void 0) return void 0;
+  const closing = location2.data?.get("turn-tail")?.closing;
+  if (closing === void 0) return void 0;
+  if (closing === null) return "";
+  return (closing.blocks ?? []).filter((block) => block.kind === "text" && block.text.trim() !== "").map((block) => block.text).join("\n\n");
 }
 function turnDetector({ loud = 0.12, quiet = 0.06, quietMs = 1200 } = {}) {
   let spokeAt = 0;
@@ -14033,9 +14062,29 @@ var VOICE_LABELS = {
   speaking: "Speaking",
   paused: "Paused",
   setup: "Voice input needs its speech model",
+  preparing: "Preparing voice input…",
   unsupported: "Voice chat is not available in this browser"
 };
 var CAPTURE_NOTES = { blocked: "Microphone access is blocked", unavailable: "Voice chat is not available in this browser", "too-long": "That was too long to recognize" };
+function watchReply(read, watch, consume) {
+  let off = () => {
+  };
+  let consumed = false;
+  const attempt = () => {
+    if (consumed) return;
+    const text = read();
+    if (text === void 0) return;
+    consumed = true;
+    off();
+    consume(text);
+  };
+  off = watch(attempt);
+  attempt();
+  return () => {
+    consumed = true;
+    off();
+  };
+}
 function useMicLevel(enabled) {
   const [level, setLevel] = (0, import_react34.useState)(0);
   (0, import_react34.useEffect)(() => {
@@ -14086,7 +14135,7 @@ function VoiceMode({ sessionId, roster, actions, useSessions, useSessionStatus }
   const lastReply = useSessions((list) => {
     const outline = list.projectionsBySession?.[sessionId]?.values?.turnOutline ?? list.byId[sessionId]?.projectionValues?.turnOutline;
     const entry = Array.isArray(outline) ? outline[outline.length - 1] : void 0;
-    return entry ? `${outline.length}|${entry.response ?? ""}` : "0|";
+    return entry ? `${outline.length}|${entry.turn}` : "0|";
   });
   const [speech] = (0, import_react34.useState)(() => actions.speech());
   const [phase, setPhase] = (0, import_react34.useState)(speech ? "starting" : speechApi() ? "listening" : "unsupported");
@@ -14211,30 +14260,45 @@ function VoiceMode({ sessionId, roster, actions, useSessions, useSessionStatus }
     };
   }, [speech, catalog, listen, cycle]);
   (0, import_react34.useEffect)(() => {
-    if (phase !== "thinking" || running || waiting.current === null) return;
-    const [count, text] = [lastReply.slice(0, lastReply.indexOf("|")), lastReply.slice(lastReply.indexOf("|") + 1)];
-    if (count === waiting.current || !text.trim()) return;
-    waiting.current = null;
-    const spoken = plainSpeech(text);
-    setSaid(spoken);
-    setHeard("");
-    if (!window.speechSynthesis || !spoken) {
-      setPhase("listening");
-      return;
-    }
-    const utterance = new SpeechSynthesisUtterance(spoken);
-    utterance.lang = /[\u3400-\u9fff]/.test(spoken) ? "zh-CN" : "en-US";
-    utterance.onend = () => setPhase((current) => current === "speaking" ? "listening" : current);
-    utterance.onerror = utterance.onend;
-    setPhase("speaking");
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
+    if (phase !== "thinking" || running || waiting.current === null) return void 0;
+    const count = lastReply.slice(0, lastReply.indexOf("|"));
+    const turn2 = Number(lastReply.slice(lastReply.indexOf("|") + 1));
+    if (count === waiting.current) return void 0;
+    const speak = (text) => {
+      waiting.current = null;
+      const spoken = plainSpeech(text);
+      setSaid(spoken);
+      setHeard("");
+      if (!window.speechSynthesis || !spoken) {
+        setPhase("listening");
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(spoken);
+      utterance.lang = /[\u3400-\u9fff]/.test(spoken) ? "zh-CN" : "en-US";
+      utterance.onend = () => setPhase((current) => current === "speaking" ? "listening" : current);
+      utterance.onerror = utterance.onend;
+      setPhase("speaking");
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    };
+    return watchReply(
+      () => actions.closingReply(sessionId, turn2),
+      (listener) => actions.watchTurns(sessionId, listener),
+      (text) => {
+        if (text === null) {
+          waiting.current = null;
+          setPhase("listening");
+          return;
+        }
+        speak(text);
+      }
+    );
   }, [phase, running, lastReply]);
   (0, import_react34.useEffect)(() => () => window.speechSynthesis?.cancel(), []);
   const micLevel = useMicLevel(!speech && phase === "listening" && dictation.listening);
   const level = speech ? serviceLevel : micLevel;
   const markState = phase === "thinking" || phase === "transcribing" ? "thinking" : phase === "speaking" ? "sending" : "idle";
-  const blocked = phase === "unsupported" || phase === "setup" || phase === "starting";
+  const blocked = phase === "unsupported" || phase === "setup" || phase === "starting" || phase === "preparing";
   const togglePause = () => {
     if (phase === "paused") {
       setPhase("listening");
@@ -14244,7 +14308,56 @@ function VoiceMode({ sessionId, roster, actions, useSessions, useSessionStatus }
     window.speechSynthesis?.cancel();
     setPhase("paused");
   };
-  const openSetup = phase === "setup" ? actions.voiceSetup() : null;
+  (0, import_react34.useEffect)(() => {
+    if (phase !== "preparing" || !speech) return void 0;
+    let stopped = false;
+    let timer;
+    const tick = async () => {
+      try {
+        const { catalog: next } = await speechCatalog(speech);
+        if (stopped) return;
+        setCatalog(next);
+        const step = preparationStep(next);
+        if (step.state === "usable") {
+          setPhase("listening");
+          return;
+        }
+        if (step.state === "done") {
+          setPhase("setup");
+          if (step.failed) setNote(t("Couldn't prepare voice input"));
+          return;
+        }
+        setNote(step.pct === void 0 ? "" : t("Downloading the speech model… {pct}%", { pct: step.pct }));
+      } catch {
+        if (!stopped) {
+          setPhase("setup");
+          return;
+        }
+      }
+      timer = setTimeout(tick, 1500);
+    };
+    timer = setTimeout(tick, 800);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [phase, speech]);
+  const openSetup = phase === "setup" ? actions.voiceSetup(catalog?.selection?.providerId) : null;
+  const startSetup = () => {
+    if (openSetup?.navigate) {
+      close();
+      openSetup.navigate();
+      return;
+    }
+    turn.current += 1;
+    setPhase("preparing");
+    void Promise.resolve(openSetup.prepare()).then((started) => {
+      if (started === false) {
+        setPhase("setup");
+        setNote(t("Couldn't prepare voice input"));
+      }
+    });
+  };
   const caption = phase === "speaking" ? said : heard;
   const shownNote = note || dictation.note;
   return (0, import_react34.createElement)(
@@ -14267,10 +14380,7 @@ function VoiceMode({ sessionId, roster, actions, useSessions, useSessionStatus }
         phase === "thinking" ? (0, import_react34.createElement)(Shimmer, null, t("Thinking…")) : phase === "transcribing" ? (0, import_react34.createElement)(Shimmer, null, t("Recognizing…")) : VOICE_LABELS[phase] ? t(VOICE_LABELS[phase]) : ""
       ),
       (0, import_react34.createElement)("div", { className: "bt-voice-caption", key: `${phase}:${caption.slice(0, 12)}` }, caption),
-      openSetup ? (0, import_react34.createElement)("button", { type: "button", className: "bt-voice-setup", onClick: () => {
-        close();
-        openSetup();
-      } }, t("Set up voice input")) : null,
+      openSetup ? (0, import_react34.createElement)("button", { type: "button", className: "bt-voice-setup", onClick: startSetup }, t("Set up voice input")) : null,
       shownNote ? (0, import_react34.createElement)("div", { className: "bt-voice-note" }, shownNote) : null
     ),
     (0, import_react34.createElement)(
@@ -20859,9 +20969,20 @@ function apply(ctx) {
   actions.speech = () => ctx.get("remote.speech") ?? void 0;
   actions.openHarnessSettings = openHarnessSettings;
   actions.openHarnessOnboarding = openHarnessOnboarding;
-  actions.voiceSetup = () => {
+  actions.voiceSetup = (providerId) => {
     const navigation = ctx.get("pluginNavigation");
-    return navigation ? () => navigation.openBundle(VOICE_BUNDLE) : null;
+    if (navigation !== void 0) return { navigate: () => navigation.openBundle(VOICE_BUNDLE) };
+    const speech = ctx.get("remote.speech");
+    return speech === void 0 || providerId === void 0 ? null : { prepare: () => requestPreparation(speech, providerId) };
+  };
+  actions.closingReply = (sessionId, turn) => {
+    try {
+      const binding = ctx.sessions.binding(sessionId);
+      if (binding === void 0) return null;
+      return closingReplyText(ctx.uiConversation.binding(binding).target("chat").getSnapshot(), turn);
+    } catch {
+      return null;
+    }
   };
   actions.seatAccount = (on) => ui2.set((state) => state.accountSeated === on ? state : { ...state, accountSeated: on });
   actions.installUpdate = async () => {

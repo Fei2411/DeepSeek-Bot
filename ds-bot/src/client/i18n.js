@@ -822,6 +822,9 @@ const ZH = {
   'Recognizing…': '识别中…',
   'Voice input needs its speech model': '语音输入还没有语音模型',
   'Set up voice input': '设置语音输入',
+  'Preparing voice input…': '正在准备语音输入…',
+  'Downloading the speech model… {pct}%': '正在下载语音模型… {pct}%',
+  "Couldn't prepare voice input": '语音输入准备失败',
   'That was too long to recognize': '这段太长了，识别不了',
 
   // Usage page

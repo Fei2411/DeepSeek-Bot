@@ -15,7 +15,7 @@ import { ComposerPlus, ComposerVoice, menuIcons } from './composer.js'
 import { CHATS_SOURCE, atSources } from './at-menu.js'
 import { BtwDock, BtwTurnTail } from './btw.js'
 import { SIDE_CSS, sideSource } from './side-chat.js'
-import { VOICE_BUNDLE } from './speech.js'
+import { VOICE_BUNDLE, closingReplyText, requestPreparation } from './speech.js'
 import { sameVersion } from './dsh-offer.js'
 import { QuestionCard, QuestionDock } from './questions.js'
 import { AnsweredReply, WidgetDock, WIDGET_CSS } from './widget-cell.js'
@@ -633,9 +633,27 @@ export function apply(ctx) {
   // DSH's own settings: models, providers, keys and its plugins.
   actions.openHarnessSettings = openHarnessSettings
   actions.openHarnessOnboarding = openHarnessOnboarding
-  actions.voiceSetup = () => {
+  // With the plugin manager mounted, setup is its bundle page (the model's size
+  // and download notes live there). Where it is not mounted — the desktop app's
+  // profile has no plugin manager — the speech Remote prepares the provider
+  // itself, and the voice pane follows its progress.
+  actions.voiceSetup = (providerId) => {
     const navigation = ctx.get('pluginNavigation')
-    return navigation ? () => navigation.openBundle(VOICE_BUNDLE) : null
+    if (navigation !== undefined) return { navigate: () => navigation.openBundle(VOICE_BUNDLE) }
+    const speech = ctx.get('remote.speech')
+    return speech === undefined || providerId === undefined ? null : { prepare: () => requestPreparation(speech, providerId) }
+  }
+  // The full text the voice chat reads aloud: the turn's closing Assistant
+  // message, not the turn outline's bounded preview. undefined while the chat
+  // view has not materialized the turn; null when the Session is not bound.
+  actions.closingReply = (sessionId, turn) => {
+    try {
+      const binding = ctx.sessions.binding(sessionId)
+      if (binding === undefined) return null
+      return closingReplyText(ctx.uiConversation.binding(binding).target('chat').getSnapshot(), turn)
+    } catch {
+      return null
+    }
   }
   actions.seatAccount = on => ui.set(state => (state.accountSeated === on ? state : { ...state, accountSeated: on }))
   // The install runs on the host; the check loop follows it every two seconds.

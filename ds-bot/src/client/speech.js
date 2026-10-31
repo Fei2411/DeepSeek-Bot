@@ -12,6 +12,35 @@ export async function speechCatalog(speech) {
   return { catalog, usable: USABLE.has(provider?.preparation?.phase) }
 }
 
+// Ask the provider to prepare. A refused request resolves as a result, not a
+// rejection, so both shapes come back as false: no preparation task started.
+export async function requestPreparation(speech, providerId) {
+  try {
+    const result = await speech.prepare(providerId)
+    return result?.ok !== false
+  } catch {
+    return false
+  }
+}
+
+// One catalog poll while the voice pane waits on preparation: 'usable' starts
+// listening; 'done' is a terminal state that left the provider unusable —
+// cancelled, failed, back at unprepared, or the provider gone — where the
+// setup step shows again and can be retried; anything else keeps waiting,
+// 'pct' carrying download progress when the provider reports byte totals.
+export function preparationStep(catalog) {
+  const preparation = catalog.providers.find(item => item.id === catalog.selection.providerId)?.preparation
+  if (preparation === undefined) return { state: 'done', failed: false }
+  if (USABLE.has(preparation.phase)) return { state: 'usable' }
+  if (preparation.phase === 'failed' || preparation.phase === 'cancelled' || preparation.phase === 'unprepared') {
+    return { state: 'done', failed: preparation.phase === 'failed' }
+  }
+  const pct = preparation.phase === 'downloading' && preparation.totalBytes
+    ? Math.floor((preparation.completedBytes / preparation.totalBytes) * 100)
+    : undefined
+  return { state: 'waiting', pct }
+}
+
 export function waveBytes(samples, rate = 16000) {
   const bytes = new Uint8Array(44 + samples.length * 2)
   const view = new DataView(bytes.buffer)
@@ -105,6 +134,18 @@ export async function transcribeWave(speech, catalog, wave, signal) {
   const result = await speech.transcribe({ audioBase64: base64Of(wave), ...catalog.selection }, signal)
   if (!result?.ok) throw Object.assign(new Error(result?.error?.message ?? 'Transcription failed'), { kind: 'service' })
   return String(result.value?.text ?? '').trim()
+}
+
+// The full closing Assistant text of a finished turn: what voice chat speaks.
+// undefined while the chat view has not materialized the turn; '' when the turn
+// closed without assistant text.
+export function closingReplyText(chat, turn) {
+  const location = chat?.timeline?.turns?.get(turn)
+  if (location === undefined) return undefined
+  const closing = location.data?.get('turn-tail')?.closing
+  if (closing === undefined) return undefined
+  if (closing === null) return ''
+  return (closing.blocks ?? []).filter(block => block.kind === 'text' && block.text.trim() !== '').map(block => block.text).join('\n\n')
 }
 
 // Voice activity on the loudness of each animation frame: speech starts above
