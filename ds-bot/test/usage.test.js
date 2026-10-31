@@ -207,6 +207,7 @@ test('a subagent Session is read through its parent, even a parent that is gone;
       { sessionId: 's-orphan', parentSessionId: 's-gone', origin: 'subagent', projections: { kind: 'cached', asOfSeq: 1, values: {} } },
       { sessionId: 's-lost', origin: 'subagent', projections: { kind: 'cached', asOfSeq: 1, values: {} } },
       { sessionId: 's-broken', projections: { kind: 'sequenced', asOfSeq: 1, values: {} } },
+      { sessionId: 's-broken2', projections: { kind: 'sequenced', asOfSeq: 1, values: {} } },
     ],
     logsExtra: {
       's-orphan': [header('deepseek', 'v4-flash'), message(1, 0, usage(8, 1), HOUR)],
@@ -220,16 +221,55 @@ test('a subagent Session is read through its parent, even a parent that is gone;
   assert.equal(totals(view)['other/chat'], 44 + 9)
   // No parent on record: it cannot be addressed, so it is not asked for.
   assert.ok(!pages.includes('s-lost'))
+  // A scan reports one summarized line, not one per Session it could not read.
   const unread = () => warnings
     .map(([template, ...args]) => template === '%s' ? args[0] : template)
     .filter(line => line.includes('usage could not read'))
-    .map(line => line.match(/usage could not read (\S+):/)?.[1])
-  assert.deepEqual(unread(), ['s-broken'])
+  assert.equal(unread().length, 1)
+  assert.match(unread()[0], /usage could not read 2 Sessions \(first: s-broken/)
 
   t.mock.timers.tick(60_000)
   await call('usage', { timeZone: 'Asia/Shanghai' })
   assert.equal(pages.filter(sessionId => sessionId === 's-orphan').length, 1)
-  assert.deepEqual(unread(), ['s-broken'])
+  assert.equal(unread().length, 1)
+})
+
+// #654: a Session with no Agent attached cannot grow, so once read to its tip it
+// seals and later scans skip it without reading it again — until it comes back.
+test('a cold Session seals once read and is read again only once it warms', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 10 * HOUR })
+  const { call, ctx, stop } = start(undefined, {
+    listedExtra: [{ sessionId: 's-x', projections: { kind: 'cached', asOfSeq: 1, values: {} } }],
+  })
+  t.after(stop)
+  let reads = 0
+  const projections = ctx.sessionController.projections
+  ctx.sessionController.projections = async (request) => {
+    if (request.sessionId === 's-x') reads += 1
+    return projections(request)
+  }
+  const relist = agentAvailable => {
+    ctx.sessionController.list = async () => ({
+      items: [{ sessionId: 's-x', agentAvailable, running: false, projections: { kind: 'cached', asOfSeq: 1, values: {} } }],
+    })
+  }
+  // First scan: cold but never read, so read once and sealed.
+  await call('usage', { timeZone: 'Asia/Shanghai' })
+  assert.equal(reads, 1)
+  // Still cold: the sealed mark skips it without any read.
+  t.mock.timers.tick(60_000)
+  await call('usage', { timeZone: 'Asia/Shanghai' })
+  assert.equal(reads, 1)
+  // Listed warm again, the seal no longer skips it.
+  relist(true)
+  t.mock.timers.tick(60_000)
+  await call('usage', { timeZone: 'Asia/Shanghai' })
+  assert.equal(reads, 2)
+  // Cold once more, it is sealed at the same tip and skipped again.
+  relist(false)
+  t.mock.timers.tick(60_000)
+  await call('usage', { timeZone: 'Asia/Shanghai' })
+  assert.equal(reads, 2)
 })
 
 test('a cached projection watermark beyond the log is not used as a page cursor', async (t) => {

@@ -333,7 +333,9 @@ export function install(rt) {
   async function scanSession(ledger, address, asOfSeq, sealable, signal) {
     const sessionId = address.kind === 'session' ? address.sessionId : address.childSessionId
     const mark = ledger.mark(sessionId)
-    if (mark?.sealed) return
+    // A sealed Session is skipped only while it still cannot grow: one sealed while
+    // cold can resume, so a warm listing clears the seal by reading it again.
+    if (mark?.sealed && sealable) return
     let through = asOfSeq
     if (through === undefined) {
       const projections = await ctx.sessionController.projections({ sessionId }, signal)
@@ -410,22 +412,41 @@ export function install(rt) {
       // the persisted cache's own watermark, so it must not cut a page. The
       // Session's exact cursor is read below when no hint is usable.
       const listedCursor = item => (item.projections?.kind === 'sequenced' ? item.projections.asOfSeq : undefined)
+      // A Session with no Agent attached is cold: its log cannot grow right now, so
+      // once it is read to its tip it is as finished as an ended part and seals.
+      const cold = new Set(listed.filter(item => item.agentAvailable !== true && item.running !== true).map(item => item.sessionId))
       const targets = new Map()
       for (const item of listed) if (item.blank !== true) targets.set(item.sessionId, listedCursor(item))
       for (const sessionId of owners.keys()) if (!targets.has(sessionId)) targets.set(sessionId, undefined)
       const addresses = new Map(listed.map(item => [item.sessionId, addressOf(item)]))
+      let reached = 0
+      const failed = []
       await eachLimited([...targets], SCAN_PARALLEL, async ([sessionId, asOfSeq]) => {
+        if (signal.aborted) return
+        reached += 1
         const address = addresses.has(sessionId) ? addresses.get(sessionId) : { kind: 'session', sessionId }
         if (address === undefined) return
         try {
-          await scanSession(ledger, address, asOfSeq, ended.has(sessionId), signal)
+          await scanSession(ledger, address, asOfSeq, ended.has(sessionId) || cold.has(sessionId), signal)
           unreadable.delete(sessionId)
         } catch (error) {
-          if (unreadable.has(sessionId)) return
-          unreadable.add(sessionId)
-          rt.warn('ds-bot: usage could not read %s: %s', sessionId, error)
+          // The scan timeout cancels the reads still open; those Sessions are not
+          // broken, so they are counted below but not remembered as unreadable.
+          if (!signal.aborted) {
+            if (unreadable.has(sessionId)) return
+            unreadable.add(sessionId)
+          }
+          failed.push([sessionId, error])
         }
       })
+      // One line for the whole scan, not one per Session it could not read.
+      const missed = failed.length + (signal.aborted ? targets.size - reached : 0)
+      if (missed > 0) {
+        const first = failed[0]
+        rt.warn('ds-bot: usage could not read %d Session%s%s%s', missed, missed === 1 ? '' : 's',
+          signal.aborted ? ' before the scan ran out of time' : '',
+          first !== undefined ? ` (first: ${first[0]}: ${first[1]})` : '')
+      }
     })().finally(() => {
       scannedAt = Date.now()
       scanning = undefined
