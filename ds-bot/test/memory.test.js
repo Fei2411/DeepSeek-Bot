@@ -233,6 +233,50 @@ test('topics hold details, linked from MEMORY.md, and go when their last entry d
   assert.equal(read('bots', 'b2', 'MEMORY.md'), '# Memory\n\n## Index\n')
 })
 
+test('recall finds a continuous Chinese phrase, and keeps space-separated and Latin matching', async (t) => {
+  const { tool, stop } = start()
+  t.after(() => stop())
+  await tool('remember', { text: '女友小李的生日是 10 月 22 日' }, 'b2')
+  await tool('remember', { text: 'The user likes green tea' }, 'b2')
+  // The phrase is not a substring of the entry: its character pairs find it.
+  assert.match(await tool('recall', { query: '小李生日' }, 'b2'), /女友小李的生日是 10 月 22 日/)
+  // An entry holding the whole phrase still matches every term.
+  await tool('remember', { text: '小李生日会定在周六' }, 'b2')
+  assert.match(await tool('recall', { query: '小李生日' }, 'b2'), /^Entries with "小李生日" in your memory and the team memory:\n\[yours · MEMORY\.md\] 小李生日会定在周六/)
+  // Space-separated terms and Latin words match as they did.
+  assert.match(await tool('recall', { query: '小李 生日' }, 'b2'), /女友小李的生日/)
+  assert.match(await tool('recall', { query: 'green tea' }, 'b2'), /likes green tea/)
+  assert.match(await tool('recall', { query: 'green 生日' }, 'b2'), /No entry has all of "green 生日"/)
+})
+
+test('recall caps the user\'s words, not their pairs, and a whole phrase outranks pair matches', async (t) => {
+  const { tool, stop } = start()
+  t.after(() => stop())
+  await tool('remember', { text: '周末上海出差安排住外滩的酒店' }, 'b2')
+  // The word after the phrase still counts: with 生日 missing, the hotel entry
+  // is not a full match, only the closest.
+  const trip = await tool('recall', { query: '周末上海出差安排 生日' }, 'b2')
+  assert.match(trip, /No entry has all of "周末上海出差安排 生日"/)
+  assert.match(trip, /周末上海出差安排住外滩的酒店/)
+  // Of many entries that share the pairs and the one that holds the phrase
+  // whole, only that one is a full match.
+  for (let at = 1; at <= 30; at += 1) await tool('remember', { text: `周末上海出差安全事项第${at}条` }, 'b2')
+  await tool('remember', { text: '周末上海出差安排在周五确认' }, 'b2')
+  const hits = await tool('recall', { query: '周末上海出差安排' }, 'b2')
+  assert.match(hits, /^Entries with "周末上海出差安排"/)
+  assert.match(hits, /周末上海出差安排在周五确认/)
+  assert.doesNotMatch(hits, /安全事项/)
+})
+
+test('a mixed word keeps its Latin part in recall', async (t) => {
+  const { tool, stop } = start()
+  t.after(() => stop())
+  await tool('remember', { text: '中文资料保存在文档中' }, 'b2')
+  await tool('remember', { text: 'AI中文教程在书架上' }, 'b2')
+  // "AI中文" is more than 中文: only the entry that holds the phrase is a full match.
+  assert.match(await tool('recall', { query: 'AI中文' }, 'b2'), /^Entries with "AI中文" in your memory and the team memory:\n\[yours · MEMORY\.md\] AI中文教程在书架上 \[source: /)
+})
+
 test('Main Bots and group admins write the team memory; only Main Bots touch another Bot\'s', async (t) => {
   const { tool, read, stop } = start()
   t.after(() => stop())
