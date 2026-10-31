@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { format } from 'node:util'
 import { apply } from '../index.js'
 import {
   MEMORY_LIMITS, addLink, cleanEntry, cleanTopic, formatEntry, insertEntry, looksLikeKey,
@@ -67,10 +68,16 @@ test('the memory panel reads JSON from the model, in a fence or not', () => {
   assert.deepEqual(parseAsk('I could not do that.'), { reply: 'I could not do that.', changes: [] })
   assert.deepEqual(parseAsk('{"reply": 3}'), { reply: '3', changes: [] })
   // The review takes only a list of changes; prose or a broken object is no answer.
-  assert.deepEqual(parseReview('```json\n{"changes": [{"op": "add", "text": "x"}]}\n```'), [{ op: 'add', text: 'x' }])
-  assert.deepEqual(parseReview('{"changes": []}'), [])
-  for (const bad of ['Nothing to keep.', '{"changes": "none"}', '{"changes": [{"op": "add"', '{"changes": ["remember this"]}', '{"changes": [{"text": "x"}]}', '{"changes": [{"op": "add", "text": " "}]}', '{"changes": [{"op": "edit", "entry": "two", "text": "x"}]}', '{"changes": [{"op": "remove", "entry": 0}]}', '{"changes": [{"op": "add", "text": "x", "team": "true"}]}']) assert.equal(parseReview(bad), undefined, bad)
-  assert.deepEqual(parseReview('{"changes": [{"op": "remove", "entry": "2"}]}'), [{ op: 'remove', entry: '2' }])
+  assert.deepEqual(parseReview('```json\n{"changes": [{"op": "add", "text": "x"}]}\n```'), { changes: [{ op: 'add', text: 'x' }], leftOut: [] })
+  assert.deepEqual(parseReview('{"changes": []}'), { changes: [], leftOut: [] })
+  for (const bad of ['Nothing to keep.', '{"changes": "none"}', '{"changes": [{"op": "add"']) assert.equal(parseReview(bad), undefined, bad)
+  // A malformed change is set aside; the well-formed ones still count.
+  for (const bad of ['"remember this"', '{"text": "x"}', '{"op": "add", "text": " "}', '{"op": "edit", "entry": "two", "text": "x"}', '{"op": "remove", "entry": 0}', '{"op": "add", "text": "x", "team": "true"}']) {
+    const parsed = parseReview(`{"changes": [${bad}, {"op": "add", "text": "y"}]}`)
+    assert.deepEqual(parsed.changes, [{ op: 'add', text: 'y' }], bad)
+    assert.deepEqual(parsed.leftOut, [JSON.parse(bad)], bad)
+  }
+  assert.deepEqual(parseReview('{"changes": [{"op": "remove", "entry": "2"}]}'), { changes: [{ op: 'remove', entry: '2' }], leftOut: [] })
 })
 
 test('the panel shows a summary as headings over paragraphs', () => {
@@ -125,6 +132,8 @@ function start({ home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-')), replies =
   if (!existsSync(join(home, 'state.json'))) writeFileSync(join(home, 'state.json'), JSON.stringify(TEAM))
   const services = defaultModel === undefined ? {} : { agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: defaultModel }) } }
   const ctx = fakeContext({ services })
+  const warnings = []
+  ctx.logger.warn = (...args) => warnings.push(format(...args))
   const requests = []
   Object.assign(ctx, {
     llm: {
@@ -172,7 +181,7 @@ function start({ home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-')), replies =
     await ctx.dispose()
     if (!keep) rmSync(home, { recursive: true, force: true, maxRetries: 5 })
   }
-  return { ctx, home, call, tool, section, read, journal, requests, stop }
+  return { ctx, home, call, tool, section, read, journal, requests, warnings, stop }
 }
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 20))
@@ -682,6 +691,25 @@ test('a group\'s review keeps what is said there in the group memory, read once 
   assert.equal((await call('state', {})).value.memoryNews.r1.op, 'add')
 })
 
+test('a group review that gets no list of changes is not re-armed by every member\'s idle', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
+  twoMembers(home)
+  const { ctx, call, read, requests, warnings, stop } = start({ home, replies: ['Let me think about that out loud.'], config: { memoryReviewDelayMs: 0 } })
+  t.after(() => stop())
+  await call('state', {})
+  ctx.emit('agent/status', { agent: { id: 'g3' }, status: 'idle' })
+  await reviewed(call)
+  assert.equal(requests.length, 1)
+  // The batch is marked read even though nothing could be saved: the next member
+  // to go idle finds nothing new and starts no model call.
+  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'group:r1': 3 })
+  assert.ok(warnings.some(line => line.includes('no list of changes')), warnings.join('\n'))
+  ctx.emit('agent/status', { agent: { id: 'g2' }, status: 'idle' })
+  ctx.emit('agent/status', { agent: { id: 'g3' }, status: 'idle' })
+  await reviewed(call)
+  assert.equal(requests.length, 1)
+})
+
 test('a first group review reads back to the user\'s line past a round of replies', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
   const replies = Array.from({ length: 6 }, (_, at) => ({ who: at % 2 ? 'Coder' : 'Writer', botId: at % 2 ? 'b3' : 'b2', text: `Reply ${at + 1}`, seq: at + 2 }))
@@ -697,47 +725,72 @@ test('a first group review reads back to the user\'s line past a round of replie
   assert.deepEqual(JSON.parse(read('reviewed.json')), { 'group:r1': 7 })
 })
 
-test('an answer that is no list of changes keeps the review\'s place, and the next one reads the turn again', async (t) => {
+test('an answer that is no list of changes is said and passed over, never read again', async (t) => {
   const replies = ['Nothing worth keeping here.', JSON.stringify({ changes: [{ op: 'add', text: 'The user wants this remembered' }] })]
-  const { ctx, call, read, requests, stop } = start({ replies, config: { memoryReviewDelayMs: 0 } })
+  const { ctx, call, read, requests, warnings, stop } = start({ replies, config: { memoryReviewDelayMs: 0 } })
   t.after(() => stop())
   await call('state', {})
   ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
   await reviewed(call)
   assert.equal(requests.length, 1)
-  // The first review fixed where it starts, just before the user's line.
-  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 9 })
+  assert.throws(() => read('bots', 'b2', 'MEMORY.md'), { code: 'ENOENT' })
+  // The miss is said, and the batch is marked read: a later turn does not read it again.
+  assert.ok(warnings.some(line => line.includes('no list of changes')), warnings.join('\n'))
+  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 11 })
   ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
   await reviewed(call)
-  assert.equal(requests.length, 2)
-  assert.equal(requests[1].messages[0].content[0].text, requests[0].messages[0].content[0].text)
-  assert.match(read('bots', 'b2', 'MEMORY.md'), /- The user wants this remembered \[source: part 1 #10;/)
-  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 11 })
+  assert.equal(requests.length, 1)
 })
 
-test('an answer with a malformed change, an unlisted entry, an entry too long, or a bad topic changes nothing and keeps the review\'s place', async (t) => {
-  const replies = [
-    JSON.stringify({ changes: [{ op: 'add', text: 'The user likes tea' }, { op: 'add' }] }),
-    JSON.stringify({ changes: [{ op: 'add', text: 'The user likes tea' }, { op: 'remove', entry: 7 }] }),
-    JSON.stringify({ changes: [{ op: 'add', text: 'The user likes tea' }, { op: 'add', text: `The user tells ${'a long story '.repeat(30)}` }] }),
-    JSON.stringify({ changes: [{ op: 'add', text: 'The user likes tea' }, { op: 'add', text: 'The user writes C++', topic: 'C++' }] }),
-    JSON.stringify({ changes: [{ op: 'add', text: 'The user likes tea' }, { op: 'add', text: 'I use hunter2 as my password' }] }),
-  ]
-  const { ctx, call, read, requests, stop } = start({ replies, config: { memoryReviewDelayMs: 0 } })
+test('a review keeps what it can, sets aside what memory cannot keep, and says each', async (t) => {
+  const replies = [JSON.stringify({ changes: [
+    { op: 'add', text: 'The user likes tea' },
+    { op: 'remove', entry: 7 },
+    { op: 'edit', entry: 9, text: 'The user likes black tea' },
+    { op: 'add', text: `The user tells ${'a long story '.repeat(30)}` },
+    { op: 'add', text: 'The user writes C++', topic: 'C++' },
+    { op: 'add', text: 'I use hunter2 as my password' },
+  ] })]
+  const { ctx, call, read, requests, warnings, stop } = start({ replies, config: { memoryReviewDelayMs: 0 } })
   t.after(() => stop())
   await call('state', {})
-  for (let tries = 0; tries < 4; tries += 1) {
-    ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
-    await reviewed(call)
-    assert.throws(() => read('bots', 'b2', 'MEMORY.md'), { code: 'ENOENT' })
-    assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 9 })
-  }
   ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
   await reviewed(call)
-  // A password is only left out: the rest is written and the place moves on.
-  assert.equal(requests.length, 5)
+  assert.equal(requests.length, 1)
+  // What memory could keep was saved; the rest was set aside and said — except a
+  // secret, whose text stays out of the log.
   assert.deepEqual(parseMemory(read('bots', 'b2', 'MEMORY.md')).entries.map(entry => entry.text), ['The user likes tea'])
   assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 11 })
+  const dropped = warnings.filter(line => line.includes('left out a change'))
+  assert.equal(dropped.length, 5, warnings.join('\n'))
+  assert.ok(dropped.some(line => line.includes('entry 7, which is not listed')))
+  assert.ok(dropped.some(line => line.includes('entry 9, which is not listed')))
+  assert.ok(dropped.some(line => line.includes('at most 300 characters') && line.includes('a long story')))
+  assert.ok(dropped.some(line => line.includes('the topic "C++", which cannot be a topic name')))
+  assert.ok(dropped.some(line => line.includes('looks like a key, token, password, or ID number')))
+  assert.ok(!dropped.some(line => line.includes('hunter2')), warnings.join('\n'))
+  // The same lines are not read again: nothing was retried.
+  ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
+  await reviewed(call)
+  assert.equal(requests.length, 1)
+})
+
+test('a review saves the well-formed changes of a partly-malformed answer, and says the rest', async (t) => {
+  const replies = [JSON.stringify({ changes: [{ op: 'add', text: 'The user likes tea' }, { op: 'add' }] })]
+  const { ctx, call, read, requests, warnings, stop } = start({ replies, config: { memoryReviewDelayMs: 0 } })
+  t.after(() => stop())
+  await call('state', {})
+  ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
+  await reviewed(call)
+  assert.equal(requests.length, 1)
+  // The malformed change did not take the answer down: the well-formed one was
+  // saved, the malformed one was said, and the batch is marked read.
+  assert.deepEqual(parseMemory(read('bots', 'b2', 'MEMORY.md')).entries.map(entry => entry.text), ['The user likes tea'])
+  assert.ok(warnings.some(line => line.includes('left out a change') && line.includes('not a well-formed change') && line.includes('{"op":"add"}')), warnings.join('\n'))
+  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 11 })
+  ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
+  await reviewed(call)
+  assert.equal(requests.length, 1)
 })
 
 test('a backlog past the text limit is reviewed in passes, oldest first', async (t) => {
@@ -788,25 +841,59 @@ test('an answer that reaches the change limit exactly is followed by another pas
   assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 11 })
 })
 
-test('a full MEMORY.md keeps the review\'s place, and an add with a topic lands there', async (t) => {
+test('a full MEMORY.md sets an add aside, says so, and an add with a topic still lands', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
   mkdirSync(join(home, 'memory', 'bots', 'b2'), { recursive: true })
   const filler = Array.from({ length: 13 }, (_, at) => `- Filler fact number ${at + 1} ${'y'.repeat(280)}`)
   writeFileSync(join(home, 'memory', 'bots', 'b2', 'MEMORY.md'), `# Memory\n\n${filler.join('\n')}\n\n## Index\n`)
-  const replies = [JSON.stringify({ changes: [{ op: 'add', text: 'The user flies with Air China' }] }), JSON.stringify({ changes: [{ op: 'add', text: 'The user flies with Air China', topic: '出行' }] })]
-  const { ctx, call, read, requests, stop } = start({ home, replies, config: { memoryReviewDelayMs: 0 } })
+  const history = { b2: [...ownChat] }
+  const replies = [
+    JSON.stringify({ changes: [{ op: 'add', text: 'The user flies with Air China' }] }),
+    JSON.stringify({ changes: [{ op: 'add', text: 'The user flies with Air China', topic: '出行' }] }),
+  ]
+  const { ctx, call, read, requests, warnings, stop } = start({ home, replies, history, config: { memoryReviewDelayMs: 0 } })
   t.after(() => stop())
   await call('state', {})
   ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
   await reviewed(call)
   assert.match(requests[0].messages[0].content[0].text, /MEMORY\.md has 3\d{3} of 4000 characters \(own\)/)
   assert.match(requests[0].system, /"topic": "travel"/)
-  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 9 })
+  // The add had no room: it was set aside and said — named by its text and where
+  // it was headed — and the batch is marked read.
+  assert.equal(parseMemory(read('bots', 'b2', 'MEMORY.md')).entries.length, 13)
+  assert.ok(warnings.some(line => line.includes('left out a change') && line.includes('"The user flies with Air China"') && line.includes('for MEMORY.md') && line.includes('of its 4000 characters')), warnings.join('\n'))
+  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 11 })
+  // The review request goes on telling how full MEMORY.md is, so the next one
+  // can put the detail in a topic instead.
+  history.b2.push({ event: { seq: 12, type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'I fly again next week' }] } } })
   ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
   await reviewed(call)
   assert.match(read('bots', 'b2', '出行.md'), /- The user flies with Air China \[/)
   assert.match(read('bots', 'b2', 'MEMORY.md'), /\[\[出行\]\]/)
+  assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 12 })
+})
+
+test('a memory that holds the most topics sets a new topic aside, says it, and moves on', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
+  const dir = join(home, 'memory', 'bots', 'b2')
+  mkdirSync(dir, { recursive: true })
+  for (let at = 1; at <= MEMORY_LIMITS.topics; at += 1) writeFileSync(join(dir, `topic-${at}.md`), `# topic-${at}\n\n- fact ${at}\n`)
+  writeFileSync(join(dir, 'MEMORY.md'), '# Memory\n\n## Index\n')
+  const replies = [JSON.stringify({ changes: [{ op: 'add', text: 'The user likes tea', topic: 'tea' }] })]
+  const { ctx, call, read, requests, warnings, stop } = start({ home, replies, config: { memoryReviewDelayMs: 0 } })
+  t.after(() => stop())
+  await call('state', {})
+  ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
+  await reviewed(call)
+  assert.equal(requests.length, 1)
+  // The refusal names the entry and its topic; the batch is marked read, so the
+  // same lines are not read again on the next idle.
+  assert.equal(existsSync(join(dir, 'tea.md')), false)
+  assert.ok(warnings.some(line => line.includes('left out a change') && line.includes('"The user likes tea"') && line.includes('topic [[tea]]') && line.includes('the most it holds')), warnings.join('\n'))
   assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 11 })
+  ctx.emit('agent/status', { agent: { id: 'b2' }, status: 'idle' })
+  await reviewed(call)
+  assert.equal(requests.length, 1)
 })
 
 test('topic entries that share words with the user\'s new lines come first', () => {
