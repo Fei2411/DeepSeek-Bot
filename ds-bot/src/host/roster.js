@@ -492,19 +492,10 @@ export function install(rt) {
     // A Bot's own permissions are the user's to set, so a group's are too.
     if (patch.permission !== undefined && actorId !== undefined) throw new Error(`Only the user can set the permissions of "${room.name}"`)
     const permission = patch.permission === undefined ? undefined : rt.cleanRoomPermission(patch.permission)
-    // The relay limit is the user's guard against a group that never stops; it is
-    // not a member's to move, whatever its role.
-    if (patch.relayLimit !== undefined && actorId !== undefined) throw new Error(`Only the user can set the relay limit of "${room.name}"`)
-    let relayLimit
-    if (patch.relayLimit === null) relayLimit = null
-    else if (patch.relayLimit !== undefined) {
-      if (!Number.isInteger(patch.relayLimit) || patch.relayLimit < 1 || patch.relayLimit > 200) throw new Error('Relay limit must be a whole number from 1 to 200')
-      relayLimit = patch.relayLimit
-    }
     // The second run is the last check before the change is written, so no other change
     // can take the name in between.
     const name = patch.name === undefined ? undefined : cleanRoomName(patch.name, room.id)
-    return { members, admin, name, notice, permission, relayLimit }
+    return { members, admin, name, notice, permission }
   }
 
   // `actorId` is the Bot asking, or undefined for the user. Returns what changed, in words.
@@ -519,7 +510,7 @@ export function install(rt) {
     // No await from here until every change is written.
     const room = rt.roomOf(id)
     if (room === undefined) throw new Error('Unknown group chat')
-    const { members, admin, name, notice, permission, relayLimit } = planRoomChange(room, patch, actorId)
+    const { members, admin, name, notice, permission } = planRoomChange(room, patch, actorId)
 
     const changes = []
     const names = ids => ids.map(member => rt.botOf(member)?.name).filter(Boolean).join(', ')
@@ -539,11 +530,6 @@ export function install(rt) {
     if (patch.mode !== undefined && patch.mode !== room.mode) {
       room.mode = patch.mode
       changes.push(patch.mode === 'admin' ? 'plain messages now go to the admin first' : 'every member now replies in turn')
-    }
-    if (relayLimit !== undefined && relayLimit !== (room.relayLimit ?? null)) {
-      if (relayLimit === null) delete room.relayLimit
-      else room.relayLimit = relayLimit
-      changes.push(relayLimit === null ? 'Bots pause at the default relay count again' : `Bots now pause after ${relayLimit} relays`)
     }
     if (notice !== undefined && notice !== (room.notice ?? '')) {
       room.notice = notice

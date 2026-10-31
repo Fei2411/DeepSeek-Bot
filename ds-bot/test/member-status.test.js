@@ -39,9 +39,10 @@ const capsuleOf = (node) => {
 test('the members line names who waits for an approval first, then who is at work', () => {
   const names = { a: 'Anvil', b: 'Flint', c: 'Prism', d: 'Quill', e: 'King', f: 'Comet' }
   const roster = { byId: Object.fromEntries(Object.entries(names).map(([id, name]) => [id, { id, name }])) }
-  const room = { members: ['e', 'd', 'a', 'b', 'c', 'f'] }
+  const room = { id: 'r1', members: ['e', 'd', 'a', 'b', 'c', 'f'] }
   const work = {
     bots: { d: { since: 1, tool: 'edit' }, a: { since: 1, tool: 'pwsh' }, f: { since: 1 } },
+    rooms: { r1: [{ botId: 'd', since: 1, tool: 'edit' }, { botId: 'f', since: 1 }] },
     approvals: [{ botId: 'a' }, { botId: 'b' }, { botId: 'c' }],
   }
   const busy = busyMembers(room, work, roster)
@@ -134,12 +135,13 @@ const dock = (sessionId, work) => {
 
 test('one capsule names who waits and who works, without the round\'s speaker, and opens the details', () => {
   const work = {
-    // Anvil runs in its own chat too; its work here wins.
+    // Anvil runs in its own chat too; its work here wins. Coral's work in r2 shows
+    // there and on its own chat, not here (#473).
     bots: { a: { since: 1, tool: 'pwsh' }, b: { since: 1, roomId: 'r2', tool: 'edit' } },
     rooms: { r1: [{ botId: 'a', since: 1, tool: 'write' }, { botId: 'd', since: 1, speaking: true }], r2: [{ botId: 'b', since: 1, tool: 'edit' }] },
     approvals: [{ botId: 'c', roomId: 'r1' }],
   }
-  assert.deepEqual(plain(dock('r1', work)), { label: 'Prism is waiting for your approval · Anvil · Writing changes… +1', calls: [['details', 'r1']] })
+  assert.deepEqual(plain(dock('r1', work)), { label: 'Prism is waiting for your approval · Anvil · Writing changes…', calls: [['details', 'r1']] })
   assert.equal(dock('r1', { bots: {}, rooms: { r1: [{ botId: 'd', since: 1, speaking: true }] }, approvals: [] }), null)
 })
 
@@ -165,7 +167,6 @@ test('a member\'s line runs a clock from its turn\'s start or its approval\'s', 
     : node.props.at !== undefined ? `{${node.props.at}}` : node.children.map(flat).join(''))
   const stateText = entry => flat(MemberState({ entry, bot: { id: 'a', name: 'Anvil' }, room: { id: 'r1' }, roster: team }))
   assert.equal(stateText({ state: 'work', doing: { roomId: 'r1', tool: 'pwsh', since: 1_000 } }), 'Running shell commands…{1000}')
-  assert.equal(stateText({ state: 'work', doing: { roomId: 'r2', tool: 'pwsh', since: 1_000 } }), 'Running shell commands… in Docs{1000}')
   assert.equal(stateText({ state: 'ask', approvals: [{ at: 2_000 }] }), 'Waiting for your approval{2000}')
   assert.equal(flat(MemberState({ entry: { state: 'idle' }, bot: { id: 'a', name: 'Anvil', role: 'Writer' }, room: { id: 'r1' }, roster: team })), 'Writer')
 })
