@@ -576,7 +576,14 @@ export function install(rt) {
       if (info?.role === 'room' && info.roomId === room.id) return `You are speaking in "${room.name}" right now. Write your message as your reply instead.`
       const text = absoluteLinks(String(args.message ?? '').trim(), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
       if (text === '') return 'Write a message to post.'
-      const named = mentionSpans(text, room.members.map(rt.botOf).filter(Boolean)).flatMap(span => (span.bot && span.bot.id !== self ? [span.bot.id] : []))
+      // Counted on the whole message. A post past MESSAGE_INLINE_MAX keeps only its
+      // first LONG_HEAD characters, and the round reads this list instead of that text.
+      const spans = mentionSpans(text, room.members.map(rt.botOf).filter(Boolean))
+      const named = []
+      for (const span of spans) {
+        if (span.bot && span.bot.id !== self && !named.includes(span.bot.id)) named.push(span.bot.id)
+      }
+      const mentions = { ids: named, all: spans.some(span => span.all === true) }
       const reportBack = args.report_back === true
       if (member && reportBack && named.length === 0) {
         return 'Nobody would answer: your post only calls the members you name. Write "@Name" for each member who should answer, or post without report_back.'
@@ -589,7 +596,7 @@ export function install(rt) {
       const sub = work === undefined ? undefined : randomUUID()
       if (sub !== undefined) rt.openWork(sub, { from: self, room: room.id, parent: work })
       try {
-        await rt.postToRoom(room, sender, long.text, { ...(reportBack ? { reportBack: true } : {}), ...(member ? { member: true } : {}), ...(sub ? { sub } : {}), ...(long.length ? { length: long.length } : {}) }, long.files)
+        await rt.postToRoom(room, sender, long.text, { mentions, ...(reportBack ? { reportBack: true } : {}), ...(member ? { member: true } : {}), ...(sub ? { sub } : {}), ...(long.length ? { length: long.length } : {}) }, long.files)
       } catch (failure) {
         if (sub !== undefined) rt.dropWork(sub)
         return `Could not post in "${room.name}": ${failure.message}`

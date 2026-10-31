@@ -64,13 +64,19 @@ export const stripWrittenCalls = text => text
 const PROGRAM_TOOL = 'run_code'
 
 const RETRY_TEXT = 'Your last reply wrote a tool call as plain text (<tool_call>…), so it did not run and nothing happened. Call the tool through the tool interface now, then reply as you meant to.'
+const RETRY_PROMISE_TEXT = 'Your last reply said you would start working, but you ended the turn without calling any tool, so nothing ran. Call the tools you need and complete the task now, or state your final answer if no tool is needed.'
+
+// A reply that only promises to start investigating/checking/running tools now without
+// actually calling a tool or handing off with @Name (#469).
+const PROMISED_WORK = /(?:^(?:收到|好的|明白|好|行|没问题|了解)[，,、。.!！：\s]*(?:我(?:现在|这就|先|马上|立刻|去|来)?(?:开始|着手|去|来|准备)?(?:排查|检查|调查|查看|看看|搜索|搜一下|分析|处理|执行|运行|跑一下|修改|修复|实现|编写|整理|验证|测试|读一下|翻一下)|(?:现在|马上|立刻)?(?:开始|着手)(?:执行|处理|排查|检查|调查|干活|开工)|开工(?:[。！!，,\s]|$))|^(?:开工(?:[。！!，,\s]|$)|我(?:现在|这就|先|马上|立刻)(?:开始|着手|去)(?:排查|检查|调查|查看|搜索|分析|处理|执行|运行|修改|修复|实现|编写|整理|验证|测试))|\b(?:(?:i\s+will|i'll|let\s+me|going\s+to)\s+(?:start|begin|check|look\s+into|investigate|search|run|inspect|read|fix|implement|work\s+on)\b|(?:starting|beginning)\s+(?:the\s+)?(?:investigation|check|search|work|execution|analysis)\b|^on\s+it[,.\s!]+(?:i'll|i\s+will|let\s+me|starting|checking)\b))/i
+export const promisesWork = text => typeof text === 'string' && text.trim().length <= 240 && PROMISED_WORK.test(text.trim())
 
 export function install(rt) {
   const { ctx, state } = rt
 
   // The retry goes where the turn's trigger came from: a group round's waiter or a
   // Bot's request keeps its exchange; anything else is a nudge in the Bot's own chat.
-  const retryWrittenCall = (id, info) => {
+  const retryTurn = (id, info, note, text) => {
     const keeps = info !== undefined && (info.role === 'room' || expectsReply(info))
     return rt.deliver({
       ...(keeps && info.senderSessionId ? { fromId: info.senderSessionId } : {}),
@@ -83,11 +89,13 @@ export function install(rt) {
       ...(keeps && info.audience ? { audience: info.audience } : {}),
       ...(keeps && info.askedBy ? { askedBy: info.askedBy } : {}),
       ...(keeps && info.senderRoomId ? { fromRoomId: info.senderRoomId } : {}),
-      note: 'your tool call did not run',
+      note,
       retried: true,
-      text: RETRY_TEXT,
+      text,
     })
   }
+  const retryWrittenCall = (id, info) => retryTurn(id, info, 'your tool call did not run', RETRY_TEXT)
+  const retryPromisedWork = (id, info) => retryTurn(id, info, 'you stopped before calling any tool', RETRY_PROMISE_TEXT)
 
   /** @type {Map<string, {turn?:number, pending?:any, pendingText?:string, info?:any, texts:string[], opened?:boolean, joined?:{info:any, from:number}[]}>} */
   const live = new Map()
@@ -100,14 +108,100 @@ export function install(rt) {
   const queueRoomMessage = (roomId, item) => roomInbox.set(roomId, [...(roomInbox.get(roomId) ?? []), item])
   // Member turns of a group round the user stopped: what they end with stays out of the group.
   const stoppedRoomTurns = new Set()
+  // Running DSH subagents spawned by each Bot Session: parentSessionId → Map<childId, {childId, label?, since}>.
+  /** @type {Map<string, Map<string, {childId:string, label?:string, since:number}>>} */
+  const subagentsByParent = new Map()
+  /** @type {Map<string, string>} childId → parentSessionId */
+  const subagentParent = new Map()
+  // Subagent child IDs and parent Sessions whose subagents were stopped by the user;
+  // late settlement notices from these stopped children must not wake the parent (#701).
+  const stoppedSubagents = new Set()
+  const stoppedSubagentParents = new Set()
+
+  const STOPPED_KEPT = 200
+  const rememberStopped = (set, value) => {
+    set.add(value)
+    if (set.size > STOPPED_KEPT) set.delete(set.values().next().value)
+  }
+
+  const subagentLabelFromCall = (entry) => {
+    const call = [...(entry?.calls?.values() ?? [])].findLast(item => item.name === 'subagent')
+    if (call === undefined) return undefined
+    try {
+      const args = JSON.parse(call.args || '{}')
+      const raw = [args.description, args.label, args.prompt, args.task].find(value => typeof value === 'string' && value.trim() !== '')
+      return raw?.replace(/\s+/g, ' ').trim().slice(0, 120)
+    } catch {
+      return undefined
+    }
+  }
+
+  const noteSubagentStart = (parentId, childId, label, since = Date.now()) => {
+    if (typeof parentId !== 'string' || parentId === '' || typeof childId !== 'string' || childId === '') return
+    if (stoppedSubagents.has(childId) || (!rt.isBotSession(parentId) && !rt.roomOf(parentId))) return
+    subagentParent.set(childId, parentId)
+    let map = subagentsByParent.get(parentId)
+    if (map === undefined) subagentsByParent.set(parentId, map = new Map())
+    const existing = map.get(childId)
+    map.set(childId, {
+      childId,
+      label: label || existing?.label || subagentLabelFromCall(live.get(parentId)),
+      since: existing?.since ?? since,
+    })
+    if (rt.groupOwners.has(parentId)) rt.workRoomTurn?.(parentId, 'subagent')
+  }
+
+  const noteSubagentEnd = (childId) => {
+    if (typeof childId !== 'string' || childId === '') return
+    const parentId = subagentParent.get(childId)
+    if (parentId === undefined) return
+    const map = subagentsByParent.get(parentId)
+    map?.delete(childId)
+    if (map !== undefined && map.size === 0) subagentsByParent.delete(parentId)
+  }
+
+  const hasSubagents = id => (subagentsByParent.get(id)?.size ?? 0) > 0
+
+  const subagentDoingOf = (id) => {
+    const active = [...(subagentsByParent.get(id)?.values() ?? [])].at(-1)
+    if (active === undefined) return undefined
+    return { since: active.since, tool: 'subagent', ...(active.label ? { note: active.label.slice(0, 120) } : {}) }
+  }
+
+  async function stopSubagents(sessionId) {
+    const map = subagentsByParent.get(sessionId)
+    const childIds = [...(map?.keys() ?? [])]
+    for (const agent of ctx.get?.('agents')?.list?.() ?? []) {
+      if (agent?.session?.header?.parentSession === sessionId && typeof agent.id === 'string' && !childIds.includes(agent.id)) {
+        childIds.push(agent.id)
+      }
+    }
+    if (childIds.length === 0) return false
+    subagentsByParent.delete(sessionId)
+    stoppedSubagentParents.add(sessionId)
+    for (const childId of childIds) {
+      rememberStopped(stoppedSubagents, childId)
+      await Promise.resolve(ctx.subagents?.interrupt?.(childId, { kind: 'user', parentSessionId: sessionId })).catch(() => {})
+      const childAgent = ctx.get?.('agents')?.get?.(childId)
+      if (childAgent !== undefined) {
+        try { childAgent.cancel?.({ kind: 'user' }) } catch {}
+      }
+    }
+    const parent = await rt.resolveAgent(sessionId).catch(() => undefined)
+    for (const message of [...(parent?.inbox?.nextStep ?? []), ...(parent?.inbox?.nextTurn ?? [])]) {
+      if (message?.source?.kind === 'subagent-settled' || stoppedSubagents.has(message?.source?.senderSessionId)) {
+        parent.inbox.remove(message.id)
+      }
+    }
+    return true
+  }
 
   // A stopped round stops the member work it started: the turn that answers it, or the
   // delivery still waiting for the member's Session. An earlier turn there keeps going.
   // An exchange whose turn already ended stays in the set, so it is bounded.
-  const STOPPED_KEPT = 200
   async function stopRoomTurn(sessionId, exchangeId) {
-    stoppedRoomTurns.add(exchangeId)
-    if (stoppedRoomTurns.size > STOPPED_KEPT) stoppedRoomTurns.delete(stoppedRoomTurns.values().next().value)
+    rememberStopped(stoppedRoomTurns, exchangeId)
+    await stopSubagents(sessionId)
     const agent = await rt.resolveAgent(sessionId).catch(() => undefined)
     if (agent === undefined) return
     const entry = live.get(sessionId)
@@ -191,7 +285,7 @@ export function install(rt) {
   // turn's end, which shows the rest as the turn's reply.
   const showSteps = (id, entry, upTo) => {
     const info = entry.info
-    if (!speaksInGroup(id, info) || (info?.role === 'room' && stoppedRoomTurns.has(info.exchangeId))) return
+    if (entry.suppressedSubagent || !speaksInGroup(id, info) || (info?.role === 'room' && stoppedRoomTurns.has(info.exchangeId))) return
     for (; entry.shown < upTo; entry.shown += 1) {
       const text = stripWrittenCalls(entry.texts[entry.shown])
       if (text !== '') void rt.roomStepText?.(id, info, text, entry.shown === 0)?.catch(error => rt.warn('ds-bot: step text from %s not posted: %s', id, error))
@@ -212,6 +306,7 @@ export function install(rt) {
     const text = `${rt.botOf(botId)?.name ?? 'The other Bot'} was deleted before it could answer your message.`
     const waiting = new Map()
     for (const id of sessionIds) {
+      await stopSubagents(id)
       const entry = live.get(id)
       const held = [entry?.info, entry?.pending, ...(entry?.joined ?? []).map(joined => joined.info)]
       if (entry?.turn !== undefined) {
@@ -255,6 +350,12 @@ export function install(rt) {
       const owner = rt.groupOwners.get(id)
       if (owner !== undefined) merged[owner.botId] ??= value
     }
+    for (const [id, map] of subagentsByParent) {
+      if (map.size === 0) continue
+      const owner = rt.groupOwners.get(id)
+      const botId = owner?.botId ?? rt.chatOwners.get(id)
+      if (botId !== undefined) merged[botId] ??= 'working'
+    }
     // A Bot writing its handoff note is thinking.
     for (const job of rt.switchJobs()) {
       if (job.roomId === undefined) merged[job.botId] = 'thinking'
@@ -295,6 +396,14 @@ export function install(rt) {
       if (botId === undefined || (owner !== undefined && bots[botId] !== undefined)) continue
       bots[botId] = { since: entry.since, ...doingOf(entry), ...(owner ? { roomId: owner.roomId } : {}) }
     }
+    for (const [id] of subagentsByParent) {
+      const sub = subagentDoingOf(id)
+      if (sub === undefined) continue
+      const owner = rt.groupOwners.get(id)
+      const botId = owner?.botId ?? rt.chatOwners.get(id)
+      if (botId === undefined || bots[botId] !== undefined) continue
+      bots[botId] = { ...sub, ...(owner ? { roomId: owner.roomId } : {}) }
+    }
     for (const job of rt.switchJobs()) {
       // `folder` marks the switch the chat must name: the working folder changed.
       const work = { since: job.since, switching: true, ...(job.folder === true ? { folder: true } : {}), ...(job.roomId ? { roomId: job.roomId } : {}) }
@@ -316,9 +425,10 @@ export function install(rt) {
     .map(([id, entry]) => [id, entry.steeredAt]))
 
   // Per group, the members whose turn there is running or who move on to a fresh part;
-  // the round's current speaker is marked, since its round shows it.
+  // the members answering in a round are marked, since the round shows them.
   const roomWorkView = () => {
-    const speaking = new Set([...roomProgress.values()].map(round => `${round.roomId}:${round.speaking}`))
+    const speaking = new Set([...roomProgress.values()].flatMap(round => round.slots
+      .filter(slot => slot.status === 'speaking').map(slot => `${round.roomId}:${slot.id}`)))
     const rooms = {}
     const add = (roomId, botId, work) => {
       if (rooms[roomId]?.some(item => item.botId === botId)) return
@@ -327,6 +437,11 @@ export function install(rt) {
     for (const [id, entry] of live) {
       const owner = rt.groupOwners.get(id)
       if (entry.turn !== undefined && owner !== undefined) add(owner.roomId, owner.botId, { since: entry.since, ...doingOf(entry) })
+    }
+    for (const [id] of subagentsByParent) {
+      const owner = rt.groupOwners.get(id)
+      const sub = owner !== undefined ? subagentDoingOf(id) : undefined
+      if (sub !== undefined) add(owner.roomId, owner.botId, sub)
     }
     for (const job of rt.switchJobs()) {
       if (job.roomId !== undefined) add(job.roomId, job.botId, { since: job.since, switching: true, ...(job.folder === true ? { folder: true } : {}) })
@@ -363,6 +478,18 @@ export function install(rt) {
     })
   }
 
+  ctx.on?.('subagent/start', (info) => {
+    const childId = info?.id
+    if (typeof childId !== 'string' || childId === '' || stoppedSubagents.has(childId)) return
+    const parentId = subagentParent.get(childId)
+      ?? ctx.get?.('agents')?.get?.(childId)?.session?.header?.parentSession
+      ?? [...live.entries()].find(([, entry]) => [...(entry.calls?.values() ?? [])].some(call => call.name === 'subagent'))?.[0]
+    if (parentId !== undefined) noteSubagentStart(parentId, childId, undefined)
+  })
+  ctx.on?.('subagent/end', (info) => {
+    noteSubagentEnd(info?.id)
+  })
+
   ctx.on('session/event', (session, event) => {
     const id = session?.id
     if (id === undefined) return
@@ -374,16 +501,26 @@ export function install(rt) {
     const entry = liveOf(id)
     if (rt.groupOwners.has(id)) rt.touchRoomTurn?.(id)
     switch (event.type) {
+      case 'subagent/catalog': {
+        const childId = event.data?.childId
+        const label = typeof event.data?.label === 'string' ? event.data.label.trim() : undefined
+        noteSubagentStart(id, childId, label, event.time ?? Date.now())
+        break
+      }
       case 'tool/call': {
         const name = String(event.data?.name ?? '')
         startCall(id, entry, event.data?.callId, name, String(event.data?.arguments ?? ''))
         // A program is as quick as the tools it runs, so its sub-calls decide.
-        if (rt.groupOwners.has(id) && name !== PROGRAM_TOOL) rt.workRoomTurn?.(id, name)
+        if (name !== PROGRAM_TOOL) {
+          entry.toolCount = (entry.toolCount ?? 0) + 1
+          if (rt.groupOwners.has(id)) rt.workRoomTurn?.(id, name)
+        }
         break
       }
       case 'tool/ptc-dispatch-start': {
         const name = String(event.data?.name ?? '')
         startCall(id, entry, event.data?.subCallId, name, JSON.stringify(event.data?.arguments ?? {}))
+        entry.toolCount = (entry.toolCount ?? 0) + 1
         if (rt.groupOwners.has(id)) rt.workRoomTurn?.(id, name)
         break
       }
@@ -401,6 +538,8 @@ export function install(rt) {
         entry.shown = 0
         entry.step = undefined
         entry.info = undefined
+        entry.toolCount = 0
+        entry.suppressedSubagent = false
         // A turn turned away before its first step may end without a turn/end.
         entry.switched = false
         entry.answers = false
@@ -426,6 +565,7 @@ export function install(rt) {
           entry.answers = carry.answers
           entry.joined = carry.joined
           entry.later = carry.later
+          entry.toolCount = carry.toolCount ?? 0
           entry.opened = true
           entry.carried = true
           if (carry.info !== undefined) claimTrigger(id, entry, carry.info)
@@ -441,6 +581,16 @@ export function install(rt) {
         break
       case 'user/message': {
         const source = event.data?.source
+        if (source?.kind === 'subagent-settled' || source?.kind === 'agent-message') {
+          if (typeof source.senderSessionId === 'string') noteSubagentEnd(source.senderSessionId)
+          if (stoppedSubagentParents.has(id) || (typeof source.senderSessionId === 'string' && stoppedSubagents.has(source.senderSessionId))) {
+            entry.suppressedSubagent = true
+            void rt.resolveAgent(id).then(agent => agent?.cancel({ kind: 'hook', reason: 'ds-bot/stopped' })).catch(() => {})
+            break
+          }
+        } else if (source?.kind === 'user' || source?.kind === SOURCE_KIND) {
+          stoppedSubagentParents.delete(id)
+        }
         // A result that came back counts as taken once a turn reads it.
         if (source?.kind === SOURCE_KIND && source.work !== undefined && source.replyTo !== undefined) rt.takenWork?.(source.work, source.replyTo)
         // A message that shares a step with a bare handoff package is what the turn
@@ -475,6 +625,8 @@ export function install(rt) {
             name: source.senderName,
             reportBack: source.reportBack === true,
             ...(source.member ? { member: true } : {}),
+            // Who the whole post called. `text` may be only its opening (attachLong).
+            ...(source.mentions ? { mentions: source.mentions } : {}),
             ...(source.sub ? { sub: source.sub } : {}),
             ...(source.late ? { late: true } : {}),
             ...(source.progress ? { progress: true } : {}),
@@ -488,11 +640,10 @@ export function install(rt) {
             // A post written into a running round already carries its log seq, or true
             // when its event needed none; the relay must not write it again.
             ...(source.logged !== undefined ? { logged: source.logged } : {}),
+            ...(source.called ? { called: true } : {}),
           })
         } else if (source?.kind === SOURCE_KIND && source.role === 'kickoff' && rt.roomOf(id)) {
           queueRoomMessage(id, { text: '', kickoff: true })
-        } else if (source?.kind === SOURCE_KIND && source.role === 'resume' && rt.roomOf(id)) {
-          queueRoomMessage(id, { text: '', resume: true })
         } else if (source?.kind === SOURCE_KIND) {
           if (entry.turn === undefined) {
             entry.pending = source
@@ -544,6 +695,15 @@ export function install(rt) {
         break
       }
       case 'agent/inbox/spliced':
+        // A message the user sends to a group while its round runs joins that round.
+        if (rt.roomOf(id)) rt.nudgeRoom?.(id)
+        if (stoppedSubagentParents.has(id)) {
+          for (const inserted of event.data?.inserted ?? []) {
+            if (inserted?.source?.kind === 'subagent-settled' || stoppedSubagents.has(inserted?.source?.senderSessionId)) {
+              void rt.resolveAgent(id).then(agent => agent?.inbox?.remove(inserted.id)).catch(() => {})
+            }
+          }
+        }
         // A message the user steered into the running turn is fresh input, like
         // a send that never queued.
         if (event.data?.target === 'next-step' && entry.turn !== undefined
@@ -574,7 +734,7 @@ export function install(rt) {
         const steerCut = cut !== undefined && event.data?.reason?.kind === 'aborted'
           && event.data.reason.reason?.kind === 'hook' && event.data.reason.reason.reason === STEER_CUT
         if (steerCut) {
-          entry.carry = { info: entry.info, joined: entry.joined ?? [], later: entry.later ?? [], texts: entry.texts.slice(0, cut.texts), shown: entry.shown, answers: entry.answers }
+          entry.carry = { info: entry.info, joined: entry.joined ?? [], later: entry.later ?? [], texts: entry.texts.slice(0, cut.texts), shown: entry.shown, answers: entry.answers, toolCount: entry.toolCount ?? 0 }
         }
         const info = entry.info
         const joined = entry.joined ?? []
@@ -582,6 +742,8 @@ export function install(rt) {
         const texts = entry.texts.slice(entry.shown)
         const shown = entry.shown > 0
         const { lastText, lastCalled } = entry
+        const toolCount = entry.toolCount ?? 0
+        const suppressedSubagent = entry.suppressedSubagent === true
         // A turn stopped for a switch goes on in the next part, which answers instead.
         const switched = entry.switched === true
         entry.turn = undefined
@@ -589,6 +751,8 @@ export function install(rt) {
         entry.texts = []
         entry.shown = 0
         entry.step = undefined
+        entry.toolCount = 0
+        entry.suppressedSubagent = false
         entry.switched = false
         entry.joined = []
         entry.since = undefined
@@ -599,7 +763,7 @@ export function install(rt) {
         entry.lastCalled = undefined
         const later = entry.later ?? []
         entry.later = []
-        if (steerCut) break
+        if (steerCut || suppressedSubagent) break
         for (const result of later) {
           void rt.deliver({
             fromId: result.info.senderSessionId,
@@ -623,8 +787,20 @@ export function install(rt) {
         // round or sender gets the real answer; a second time, the text goes on without
         // the call.
         const wroteCall = failure === undefined && reason?.kind === 'completed' && lastCalled !== true && writesToolCall(lastText)
-        const retry = wroteCall && info?.retried !== true && !(info?.role === 'room' && stoppedRoomTurns.has(info.exchangeId))
-        if (retry) void retryWrittenCall(id, info).catch(error => rt.warn('ds-bot: asking %s to run its written tool call failed: %s', id, error))
+        const promisedOnly = !wroteCall && failure === undefined && reason?.kind === 'completed'
+          && toolCount === 0 && lastCalled !== true && info?.role === 'room'
+          && promisesWork(lastText) && !rt.callsRoomMember?.(id, info, lastText)
+        const retry = (wroteCall || promisedOnly) && info?.retried !== true && !(info?.role === 'room' && stoppedRoomTurns.has(info.exchangeId))
+        if (retry) {
+          if (promisedOnly) {
+            const opening = stripWrittenCalls(lastText ?? '')
+            if (opening !== '') void rt.roomStepText?.(id, info, opening, !shown)?.catch(() => {})
+            roomWaiters.get(info.exchangeId)?.touch()
+            void retryPromisedWork(id, info).catch(error => rt.warn('ds-bot: asking %s to run its promised work failed: %s', id, error))
+          } else {
+            void retryWrittenCall(id, info).catch(error => rt.warn('ds-bot: asking %s to run its written tool call failed: %s', id, error))
+          }
+        }
         const replyText = () => {
           const reply = (wroteCall ? texts.map(stripWrittenCalls) : texts).join('\n\n').trim()
           return wroteCall && reply === '' ? 'Tried to run a tool but wrote the call as text, so it did not run.' : reply
@@ -714,5 +890,5 @@ export function install(rt) {
     if (entry?.turn !== undefined) entry.cut = { texts: entry.texts.length }
   }
 
-  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, roomWorkView, turnsView, steeredView, callDetail, doingOf, stopRoomTurn, releaseBot, markSteerCut })
+  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, roomWorkView, turnsView, steeredView, callDetail, doingOf, stopRoomTurn, releaseBot, markSteerCut, hasSubagents, stopSubagents })
 }
