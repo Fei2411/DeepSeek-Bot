@@ -176,6 +176,28 @@ test('capability tool descriptions and attach results explain approval', async t
   assert.ok(attached.endsWith(' The user must allow blocked in DS Bot settings before it can work.'))
 })
 
+test('a deleted Bot leaves no shared capability it alone held behind', async t => {
+  const env = await setup({
+    beforeLoad: ({ ctx }) => { ctx.workspaceRegistry = { archiveSession: async () => {} } },
+  })
+  t.after(() => env.dispose())
+  const { rt } = env
+  await rt.capabilitySave(mcp('echo'), { botId: 'chief' })
+  await rt.capabilitySave(mcp('solo'), { botId: 'chief' })
+  await rt.capabilitySave({ name: 'guide', kind: 'skill', description: 'Guide', content: 'Do the work.' }, { botId: 'chief' })
+  await rt.capabilitySave({ name: 'team', kind: 'pack', items: ['echo', 'solo'] }, { botId: 'chief' })
+  await rt.capabilitySave(mcp('shared'), { botId: 'chief' })
+  await rt.capabilitySave(mcp('unused'), { ui: true })
+  rt.state.bots.worker.capabilities = ['echo', 'guide', 'team']
+  rt.state.bots.helper.capabilities = ['guide', 'shared']
+  await rt.deleteBot('worker')
+  // 'echo', 'solo' (only inside 'team') and 'team' had no other holder; the rest stay.
+  assert.deepEqual(Object.keys(rt.state.capabilities.items).sort(), ['guide', 'shared', 'unused'])
+  await assert.rejects(rt.capabilityEndpoint('capability-approve', { name: 'echo' }), /No unapproved stdio MCP/)
+  const saved = JSON.parse(await (await import('node:fs/promises')).readFile(join(env.home, 'state.json'), 'utf8'))
+  assert.deepEqual(Object.keys(saved.capabilities.items).sort(), ['guide', 'shared', 'unused'])
+})
+
 test('read-only secret reload does not requeue capability reconciliation', async t => {
   const env = await setup()
   t.after(() => env.dispose())

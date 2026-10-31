@@ -152,6 +152,21 @@ export function install(rt) {
     await rt.save()
     return true
   }
+  // Called with the attachment list of a Bot being deleted, after it left the team:
+  // the items no remaining Bot uses leave the list with it instead of staying as
+  // orphans a later approval would start for nobody. Items never attached stay.
+  const dropOrphanCapabilities = (names) => {
+    const items = library()
+    // Children of a held pack count too: a Set visit reaches entries added while it runs.
+    const held = new Set(names ?? [])
+    for (const name of held) for (const child of own(items, name)?.items ?? []) held.add(child)
+    for (const name of held) {
+      const item = own(items, name)
+      if (item === undefined || usedByOthers(name)) continue
+      delete items[item.name]
+      for (const pack of Object.values(items)) if (pack.kind === 'pack') pack.items = (pack.items ?? []).filter(child => child !== item.name)
+    }
+  }
   const changeAttachment = async (endpoint, { name, bot: targetRef }, callerId) => {
     await rt.load()
     writeCheck()
@@ -515,6 +530,7 @@ export function install(rt) {
   Object.assign(rt, {
     capabilitySave,
     capabilityDelete,
+    dropOrphanCapabilities,
     capabilityEndpoint,
     capabilityLibraryView: libraryView,
     capabilityStatusesView,
