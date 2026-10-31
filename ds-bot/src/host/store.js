@@ -261,13 +261,28 @@ export function install(rt) {
       // A cached "writer" is stale once the lock file no longer names this host:
       // another dsh may have taken it over, or the file may just be gone. Re-claim
       // and re-check instead of trusting the flag.
+      const previous = lock.read()
       claimLock()
       if (lockBroken) return
       if (holder === undefined) {
-        // The lock was free: still the writer, but the file may carry changes
-        // written while no host held it.
         warnedReadOnly = false
-        adopt(await readFileState())
+        // A lock file another dsh left behind means the team changed hands, so its
+        // file is adopted. Without one the state should still be what this host
+        // last wrote; a file that changed anyway came from outside, so it is kept
+        // as a copy and this host keeps its own state.
+        if (previous !== undefined) {
+          adopt(await readFileState())
+          return
+        }
+        if (stamp() !== seen) {
+          const backup = `${statePath}.edited-${Date.now()}`
+          try {
+            await copyFile(statePath, backup)
+            warn('ds-bot: %s changed while no host held the team and its lock was gone; the change was not adopted, the file is kept as %s', statePath, backup)
+          } catch (error) {
+            warn('ds-bot: %s changed while no host held the team and its lock was gone; the change was not adopted and keeping a copy failed: %s', statePath, error)
+          }
+        }
         return
       }
       warn('ds-bot: %s', readOnly())

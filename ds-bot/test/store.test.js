@@ -176,6 +176,56 @@ test('refresh adopts a fixed state file and clears read-only mode', async (t) =>
   assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).prefs.marker, 'saved after repair')
 })
 
+test('a state file changed while the lock was gone is set aside, not adopted', async (t) => {
+  const { rt, home, statePath, warnings } = runtime(t)
+  await rt.load()
+  rt.state.prefs.marker = 'kept'
+  await rt.save()
+  // A tool with full file access can edit the team file and remove the lock.
+  fs.writeFileSync(statePath, JSON.stringify({ version: 1, revision: 900, prefs: { marker: 'outside edit' } }))
+  fs.rmSync(join(home, 'state.lock'))
+  await rt.refresh()
+  assert.equal(rt.state.prefs.marker, 'kept')
+  assert.equal(rt.readOnly(), undefined)
+  assert.ok(warnings.some(args => /not adopted/.test(String(args))))
+  const backups = fs.readdirSync(home).filter(name => name.startsWith('state.json.edited-'))
+  assert.equal(backups.length, 1)
+  assert.equal(JSON.parse(fs.readFileSync(join(home, backups[0]), 'utf8')).prefs.marker, 'outside edit')
+  // The next save writes this host's own state over the outside file.
+  await rt.save()
+  assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).prefs.marker, 'kept')
+})
+
+test('a changed file is adopted when another host left its lock behind', async (t) => {
+  const { rt, home, statePath } = runtime(t)
+  await rt.load()
+  rt.state.prefs.marker = 'before'
+  await rt.save()
+  // A dsh that took over and is gone leaves its lock beside the file it wrote.
+  fs.writeFileSync(join(home, 'state.lock'), JSON.stringify({ pid: 99999999, host: hostname(), token: 'other-host', since: Date.now() }))
+  fs.writeFileSync(statePath, JSON.stringify({ version: 1, revision: 900, prefs: { marker: 'taken over' } }))
+  await rt.refresh()
+  assert.equal(rt.state.prefs.marker, 'taken over')
+  assert.equal(rt.readOnly(), undefined)
+  await rt.save()
+  assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).prefs.marker, 'taken over')
+})
+
+test('a reading host takes over the team once the dsh that held it is gone', async (t) => {
+  const { rt, home, statePath } = runtime(t, { version: 1, revision: 4, prefs: { marker: 'first write' } })
+  fs.writeFileSync(join(home, 'state.lock'), JSON.stringify({ pid: process.ppid, host: hostname(), token: 'other-host', since: Date.now() }))
+  await rt.load()
+  assert.match(rt.readOnly(), /another dsh/)
+  // The other dsh wrote its last state and closed, releasing the lock.
+  fs.writeFileSync(statePath, JSON.stringify({ version: 1, revision: 5, prefs: { marker: 'handed over' } }))
+  fs.rmSync(join(home, 'state.lock'))
+  await rt.refresh()
+  assert.equal(rt.readOnly(), undefined)
+  assert.equal(rt.state.prefs.marker, 'handed over')
+  await rt.save()
+  assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).prefs.marker, 'handed over')
+})
+
 test('an unusable state lock warns and keeps the team saving', async (t) => {
   const { rt, home, statePath, warnings } = runtime(t)
   const lockPath = join(home, 'state.lock')
