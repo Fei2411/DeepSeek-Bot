@@ -371,3 +371,50 @@ test('a team saved before the result was kept whole still answers, and says what
   const answer = textOf(callsOf(first.agents, 'a')[0][1].content)
   assert.match(answer, /Tester:\nx{2000}\n\[cut; 5000 characters in all, the rest was not kept\]/)
 })
+
+test('a subagent a Bot delegated to hands its result into the work the turn answered', async (t) => {
+  const { start } = bench(t)
+  const first = await start(seed())
+  const { agents, emit, tool } = first
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
+  turns.end('a', 'asked Writer')
+  turns.take('b')
+  // Writer delegates part of the work to a subagent instead of another Bot.
+  emit('b', 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
+  emit('b', 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
+  turns.end('b', 'subagent is on it')
+  // The answer waits while the sub-work is out, like a handed-on request.
+  await delay(50)
+  assert.equal(callsOf(agents, 'a').length, 0)
+  const works = await worksIn(first)
+  const [work] = Object.values(works).filter(entry => entry.to === 'b')
+  assert.deepEqual(work.open, ['sub1'])
+  // The child settles; its closing message is the sub-work's result.
+  emit('b', 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('reviewed: three findings') })
+  emit('b', 'user/message', { content: textBlock('Subagent sub1 settled.\n\nIts closing message:\nreviewed: three findings'), source: { kind: 'subagent-settled', form: 'notice', senderSessionId: 'sub1' } })
+  emit('b', 'turn/start', { turn: 2 })
+  emit('b', 'assistant/message', assistantText('all reviewed'))
+  emit('b', 'turn/end', { turn: 2, reason: { kind: 'completed' } })
+  await settled(() => callsOf(agents, 'a').length === 1)
+  const answer = textOf(callsOf(agents, 'a')[0][1].content)
+  assert.ok(answer.includes('all reviewed'), `own reply goes up: ${answer}`)
+  assert.ok(answer.includes('subagent deep review'), `result is named: ${answer}`)
+  assert.ok(answer.includes('reviewed: three findings'), `result text goes up: ${answer}`)
+  const after = await worksIn(first)
+  assert.equal(Object.keys(after).length, 0)
+})
+
+test('a subagent started on a turn that answers no work changes nothing', async (t) => {
+  const { start } = bench(t)
+  const first = await start(seed())
+  const { emit } = first
+  const turns = turnTaker(first.agents, first.emit)
+  turns.userTurn('b', 'summarize this')
+  emit('b', 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'a summary', prompt: 'summarize' }) })
+  emit('b', 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
+  turns.end('b', 'done')
+  const works = await worksIn(first)
+  assert.deepEqual(works, {})
+})

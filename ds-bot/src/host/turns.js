@@ -62,6 +62,14 @@ export const stripWrittenCalls = text => text
 // Under DSH's PTC presentation the model calls only this tool; the program's sub-calls
 // are the tools it really runs.
 const PROGRAM_TOOL = 'run_code'
+// DSH's delegation tools, named by the tool instance: a spawn child and a fork.
+const SUBAGENT_TOOLS = new Set(['subagent', 'subagent_fork'])
+// A settled child's closing text, or why it ended without one.
+const subEndText = (data) => {
+  const text = textOf(data?.lastAssistantMessage)
+  if (text !== '') return text
+  return `subagent ended${typeof data?.stopReason === 'string' ? ` (${data.stopReason})` : ''} without a closing message.`
+}
 
 const RETRY_TEXT = 'Your last reply wrote a tool call as plain text (<tool_call>…), so it did not run and nothing happened. Call the tool through the tool interface now, then reply as you meant to.'
 
@@ -393,6 +401,23 @@ export function install(rt) {
       case 'tool/result':
         endCall(id, entry, event.data?.callId)
         break
+      case 'subagent/start': {
+        // A subagent the turn delegated to is work handed on, like message_bot: it
+        // hangs under the work the turn answers until its settlement notice comes
+        // back, and its closing message joins that work's results.
+        const work = rt.workOf?.(entry.info)
+        const self = rt.selfOf(id)
+        if (work !== undefined && self !== undefined && rt.chatOwners.has(id) && typeof event.data?.id === 'string' && rt.ownsWork?.(self, work)) {
+          const call = [...(entry.calls?.values() ?? [])].findLast(item => SUBAGENT_TOOLS.has(item.name))
+          let label
+          try { label = JSON.parse(call?.args ?? '{}').description } catch {}
+          rt.openWork?.(event.data.id, { from: self, parent: work, name: `subagent${typeof label === 'string' && label.trim() !== '' ? ` ${label.trim()}` : ''}` })
+        }
+        break
+      }
+      case 'subagent/end':
+        if (typeof event.data?.id === 'string') rt.settleSubWork?.(event.data.id, subEndText(event.data))
+        break
       case 'turn/start':
         setActivity(id, 'thinking')
         entry.turn = event.data.turn
@@ -520,6 +545,17 @@ export function install(rt) {
           queueRoomMessage(id, { text: reminderText(textOf(event.data.content)) })
         } else if (source?.kind === REFERENCE_KIND && rt.roomOf(id)) {
           attachReference(roomInbox.get(id), source, textOf(event.data.content))
+        } else if (source?.kind === 'subagent-settled') {
+          // A settled sub-work's notice: the work it hung under goes on once a turn
+          // reads it, like a reply that came back. One read while a turn does other
+          // work comes back in a turn of its own, like any handed-back result.
+          const parent = rt.subWorkParent?.(source.senderSessionId)
+          if (parent !== undefined) {
+            rt.takenWork?.(parent, source.senderSessionId)
+            const info = { kind: SOURCE_KIND, role: 'reply', work: parent, replyTo: source.senderSessionId, exchangeId: source.senderSessionId, senderSessionId: source.senderSessionId }
+            if (entry.turn === undefined) entry.pending = info
+            else if (rt.workOf?.(entry.info) !== parent) entry.later = [...(entry.later ?? []), { info, text: textOf(event.data.content) }]
+          }
         } else if (source?.kind === 'user' || source?.kind === REPLY_KIND) {
           if (rt.roomOf(id) && source.kind === 'user') {
             const content = Array.isArray(event.data.content) ? event.data.content : []
