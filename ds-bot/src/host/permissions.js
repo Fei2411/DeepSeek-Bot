@@ -20,16 +20,19 @@ export function install(rt) {
 
   const roomOfSession = sessionId => rt.roomOf(rt.groupOwners.get(sessionId)?.roomId)
 
+  // `name` may be a function: it is read once the agent resolves, so a change asked
+  // for while the resolve ran wins over the one still being applied.
   async function setPreset(sessionId, name) {
     const agent = await rt.resolveAgent(sessionId)
-    presets().set(agent.session, name)
+    const wanted = typeof name === 'function' ? name() : name
+    if (wanted) presets().set(agent.session, wanted)
   }
 
   // Sets the preset on one of the Bot's Sessions: its group's there, else its own; a Bot
   // without one keeps DSH's default. `room` is for a group Session not indexed yet.
   async function applyPermission(bot, sessionId, room = roomOfSession(sessionId)) {
-    const name = room?.permission ?? bot.permission
-    if (presets() === undefined || !name) return
+    const name = () => room?.permission ?? bot.permission
+    if (presets() === undefined || !name()) return
     await setPreset(sessionId, name)
   }
 
@@ -44,8 +47,19 @@ export function install(rt) {
 
   async function setPermission(bot, name) {
     const wanted = checkPreset(name, 'a Bot\'s')
-    await applyPermission({ ...bot, permission: wanted }, rt.chatOf(bot.id))
+    // The preset is written before its first await: a request still being applied
+    // then reads the one asked for last.
+    const previous = bot.permission
     bot.permission = wanted
+    try {
+      await applyPermission(bot, rt.chatOf(bot.id))
+    } catch (error) {
+      if (bot.permission === wanted) {
+        if (previous === undefined) delete bot.permission
+        else bot.permission = previous
+      }
+      throw error
+    }
     for (const sessionId of rt.groupSessionsOf(bot.id)) {
       if (roomOfSession(sessionId)?.permission) continue
       await applyPermission(bot, sessionId)
@@ -69,8 +83,7 @@ export function install(rt) {
       const bot = rt.botOf(botId)
       if (bot === undefined) continue
       // A member without a preset of its own goes back to the default its Session started on.
-      const next = wanted ?? bot.permission ?? service.catalog().defaultPreset
-      await setPreset(sessionId, next)
+      await setPreset(sessionId, () => room.permission ?? bot.permission ?? service.catalog().defaultPreset)
         .catch(error => rt.warn('ds-bot: permission for %s in %s not applied: %s', bot.name, room.name, error))
     }
     return true
