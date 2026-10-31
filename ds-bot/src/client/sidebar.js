@@ -35,6 +35,23 @@ const nameIfCut = (event) => {
   else row.removeAttribute('title')
 }
 
+// A wave line crests every 30 units and runs long enough to drift a full crest either way.
+const waveLine = (x, y, height) => `M${x} ${y}q7.5 ${-height} 15 0${'t15 0'.repeat(13)}`
+const WAVE_BACK = waveLine(-37.5, 18, 3.5)
+const WAVE_FRONT = waveLine(-30, 27, 4.5)
+
+// Ambient motion belongs to the Lively level (ui-standard principle 4), so the wave keeps
+// still otherwise; reduced motion needs !important to outweigh the Lively rules.
+function OpenWater() {
+  return h('div', { className: 'bt-swim' },
+    h('svg', { className: 'bt-swim-wave', width: 120, height: 40, viewBox: '0 0 120 40', fill: 'none', stroke: 'currentColor', strokeLinecap: 'round', 'aria-hidden': true },
+      h('path', { className: 'bt-swim-back', d: WAVE_BACK, strokeWidth: 1.4, opacity: 0.55 }),
+      h('path', { className: 'bt-swim-front', d: WAVE_FRONT, strokeWidth: 1.6 }),
+      h('circle', { cx: 76, cy: 9, r: 2.2, strokeWidth: 1.2 }),
+      h('circle', { cx: 83, cy: 3.6, r: 1.4, strokeWidth: 1.2 })),
+    h('p', { className: 'bt-empty' }, t('Your Bots will swim here')))
+}
+
 // Whether an approval waits for the user: for a Bot, in any of its Sessions; for a group,
 // from any of its members there.
 const useApproval = (useWork, match) => (useWork ? useWork(work => (work.approvals ?? []).some(match)) : false)
@@ -501,7 +518,8 @@ export function TeamSidebar(props) {
         ? h(BotRow, { key: entry.item.id, ...rowProps, bot: entry.item, marked: markedUnread[entry.item.id] === true })
         : entry.kind === 'room'
           ? h(RoomRow, { key: entry.item.id, ...rowProps, room: entry.item, marked: markedUnread[entry.item.id] === true })
-          : h(AgentRow, { key: entry.item.id, ...rowProps, agent: entry.item, marked: markedUnread[entry.item.id] === true })))),
+          : h(AgentRow, { key: entry.item.id, ...rowProps, agent: entry.item, marked: markedUnread[entry.item.id] === true }))),
+      wideContent && main && order.length === 0 ? h(OpenWater) : null),
     foot)
   return h(Fragment, null,
     h(TitleToggle, { hidden: mode === 'hidden', onToggle }),
@@ -873,6 +891,13 @@ export const SIDEBAR_CSS = `
 .bt-rail .bt-row{position:relative}
 .bt-rail .bt-pin{position:absolute;top:1px;left:calc(50% + 14px)}
 .bt-side .bt-read-only{margin:4px 8px 6px;padding:8px 10px;border-radius:10px;background:var(--bt-hover);font-size:12px;line-height:1.45;text-align:left}
+.bt-swim{display:flex;flex-direction:column;align-items:center;margin:auto 0;padding:24px 0 64px;color:var(--bt-ink-3);animation:bt-veil-in .24s ease-out backwards}
+.bt-swim-wave{flex:none;mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent)}
+.bt-swim .bt-empty{margin:0;padding:4px 12px 0}
+body[data-bt-motion=lively] .bt-swim-front{animation:bt-swim-drift 7s linear infinite}
+body[data-bt-motion=lively] .bt-swim-back{animation:bt-swim-drift 11s linear infinite reverse}
+@keyframes bt-swim-drift{to{translate:-30px 0}}
+@media (prefers-reduced-motion:reduce){.bt-swim,.bt-swim-wave path{animation:none!important}}
 [class*="_footArea"]:has(.bt-foot-account){grid-template-columns:auto minmax(0,1fr) auto;column-gap:6px}
 [class*="_footArea"]>[class*="_footerActions"]>div>.bt-foot-account{grid-column:1;order:1;display:inline-flex}
 [class*="_footArea"]:has(.bt-foot-account)>[class*="_settingsArea"]{grid-column:3}

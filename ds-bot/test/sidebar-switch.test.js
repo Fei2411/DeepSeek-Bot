@@ -374,6 +374,45 @@ test('the column\'s top row hides it, on the rail too, and its edge is a drag gr
   assert.equal(toggle.props.hidden, true)
 })
 
+// #622: with only the Main Bot, the open sidebar was blank below the Main Bot's card.
+test('an open sidebar with only the Main Bot shows open water, which moves only when the team is lively', () => {
+  const main = { id: 'chief', name: 'Chief', createdAt: 1 }
+  const room = { id: 'room', name: 'Ops', members: ['chief'], createdAt: 2 }
+  const agent = { id: 'agent', sessions: [], createdAt: 3 }
+  viewport.innerWidth = 1280
+  const render = (pref, more = {}) => {
+    const roster = { bots: [main], rooms: [], agents: [], byId: { chief: main }, mainBotId: 'chief', ready: true, exchangeTurns: {}, ...more }
+    return TeamSidebar({
+      actions: {},
+      useRoster: pick => pick(roster), useUi: pick => pick({ unread: {} }), useRegistry: pick => pick({}),
+      useSessions: pick => pick({ ids: [], byId: {} }), useUpdate: () => ({}),
+      useSidebarPref: pick => pick(pref),
+    })
+  }
+  const find = (node, match) => {
+    if (Array.isArray(node)) return node.map(child => find(child, match)).find(Boolean)
+    if (!node || typeof node !== 'object') return undefined
+    return match(node) ? node : find(node.props?.children, match)
+  }
+  const water = node => node.type?.name === 'OpenWater'
+  const shown = find(render('open'), water)
+  assert.ok(shown)
+  const hint = shown.type()
+  assert.equal(find(hint, node => node.type === 'p').props.children.join(''), 'Your Bots will swim here')
+  assert.equal(find(hint, node => node.type === 'svg').props['aria-hidden'], true)
+  assert.equal(find(render('rail'), water), undefined)
+  assert.equal(find(render('open', { rooms: [room] }), water), undefined)
+  assert.equal(find(render('open', { agents: [agent] }), water), undefined)
+  assert.equal(find(render('open', { bots: [main, { id: 'writer', name: 'Writer', createdAt: 4 }] }), water), undefined)
+  // While the Main Bot is still being set up, the list shows that instead.
+  assert.equal(find(render('open', { bots: [], byId: {}, mainBotId: undefined, ready: false }), water), undefined)
+  // Still by default: only the Lively level drifts the wave, and reduced motion stops it.
+  const drifts = SIDEBAR_CSS.split('}').filter(rule => rule.includes('animation:bt-swim-drift'))
+  assert.equal(drifts.length, 2)
+  for (const rule of drifts) assert.match(rule.trim(), /^body\[data-bt-motion=lively\] \.bt-swim-(front|back)\{/)
+  assert.match(SIDEBAR_CSS, /@media \(prefers-reduced-motion:reduce\)\{\.bt-swim,\.bt-swim-wave path\{animation:none!important\}\}/)
+})
+
 test('the logo row takes no room in an open sidebar under a Windows title bar', () => {
   const { document } = shell({ platform: 'windows', collapsed: false })
   const row = document.querySelector('.x_logoRow')
