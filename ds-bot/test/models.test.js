@@ -42,18 +42,26 @@ test('a Bot runs on its own model, else the one it last ran on, else the default
   assert.equal(await rt.desiredModel({ model: 'gone/model' }), 'ollama/kimi-k3')
 })
 
-test('choosing a Bot model leaves the user\'s DSH default model as it was', async () => {
+test('a Bot model selection is a durable Session event; the profile default is never written', async () => {
   const writes = []
-  let current = { provider: 'ollama', model: 'kimi-k3' }
-  const defaults = {
-    currentSelection: () => ({ ...current }),
-    saveSelection: async (next) => { writes.push(`${next.provider}/${next.model}`); current = { ...next } },
+  const appended = new Map()
+  const agentOf = (sessionId) => {
+    if (!appended.has(sessionId)) {
+      const events = []
+      appended.set(sessionId, { session: { id: sessionId, append: (type, data) => events.push({ type, data }) }, ctx: { on() {} }, events })
+    }
+    return appended.get(sessionId)
   }
   const ctx = {
     llm: { listProviders: () => [], listModels: async () => [] },
-    get: name => (name === 'agentDefaultModel' ? defaults : undefined),
-    // Like DSH: the selection is also saved as the default, in the background.
-    sessionController: { selectModel: async ({ provider, model }) => { void defaults.saveSelection({ provider, model }) } },
+    get: name => (name === 'agentDefaultModel' ? {
+      currentSelection: () => ({ provider: 'ollama', model: 'kimi-k3' }),
+      saveSelection: async next => writes.push(`${next.provider}/${next.model}`),
+    } : undefined),
+    sessionController: {
+      resolveAgent: async sessionId => ({ agent: agentOf(sessionId) }),
+      selectModel: async () => { throw new Error('selectModel must not be called') },
+    },
   }
   const rt = { ctx, state: { bots: {} }, warn() {} }
   install(rt)
@@ -62,8 +70,9 @@ test('choosing a Bot model leaves the user\'s DSH default model as it was', asyn
     rt.selectSessionModel('s2', { provider: 'deepseek', model: 'deepseek-v4.1-flash' }),
     rt.selectSessionModel('s3', { provider: 'ollama', model: 'kimi-k3' }),
   ])
-  assert.deepEqual(current, { provider: 'ollama', model: 'kimi-k3' })
-  assert.deepEqual(writes, ['deepseek/deepseek-v4-pro', 'ollama/kimi-k3', 'deepseek/deepseek-v4.1-flash', 'ollama/kimi-k3', 'ollama/kimi-k3'])
+  assert.deepEqual(writes, [])
+  assert.deepEqual(appended.get('s1').events, [{ type: 'model/selection', data: { provider: 'deepseek', model: 'deepseek-v4-pro' } }])
+  assert.deepEqual(appended.get('s2').events, [{ type: 'model/selection', data: { provider: 'deepseek', model: 'deepseek-v4.1-flash' } }])
 })
 
 test('a Bot with no model yet changes nothing until the user picks one', async () => {
@@ -74,33 +83,52 @@ test('a Bot with no model yet changes nothing until the user picks one', async (
   assert.equal(rt.cachedDefault(), 'ollama/kimi-k3')
 })
 
-// A runtime with two providers, a DSH default, and a session controller that, like
-// DSH, saves every Session selection as the default.
+// A runtime with two providers, a DSH default, and per-Session agents that log
+// appended events and register request hooks like a live Agent. `selectModel`
+// throws: a Bot selection must never reach it — it would save the profile default.
 function bench({ providers = { deepseek: ['v4-flash'], stepfun: ['step-5'] }, fallback = { provider: 'stepfun', model: 'step-5' }, reasoning = {} } = {}) {
-  let current = { ...fallback }
+  const current = { ...fallback }
   const selected = []
   const saved = []
   const listeners = new Map()
+  const agents = new Map()
+  const projections = new Map()
+  const agentOf = (sessionId) => {
+    if (!agents.has(sessionId)) {
+      const hooks = []
+      agents.set(sessionId, {
+        session: {
+          id: sessionId,
+          append: (type, data) => {
+            if (type !== 'model/selection') return
+            selected.push(`${sessionId}:${data.provider}/${data.model}${data.reasoningEffort === undefined ? '' : `:${data.reasoningEffort}`}`)
+            projections.set(sessionId, { lastUsed: null, pending: { ...data } })
+          },
+        },
+        ctx: { on: (name, listener) => hooks.push(listener) },
+        hooks,
+      })
+    }
+    return agents.get(sessionId)
+  }
   const ctx = {
     on(name, listener) { listeners.set(name, listener); return () => listeners.delete(name) },
     get: name => (name === 'agentDefaultModel'
-      ? { currentSelection: () => ({ ...current }), saveSelection: async (next) => { saved.push(next); current = { ...next } } }
-      : undefined),
+      ? { currentSelection: () => ({ ...current }), saveSelection: async (next) => { saved.push(next); Object.assign(current, next) } }
+      : name === 'sessionProjections' ? { stateOf: session => projections.get(session.id) } : undefined),
     llm: {
       listProviders: () => Object.keys(providers).map(id => ({ id, name: id.toUpperCase() })),
       listModels: async id => providers[id].map(model => ({ id: model, name: model, inputModalities: ['text'] })),
       resolveModelInfo: async (provider, model) => reasoning[`${provider}/${model}`] ?? {},
     },
     sessionController: {
-      selectModel: async ({ sessionId, provider, model, reasoningEffort }) => {
-        selected.push(`${sessionId}:${provider}/${model}${reasoningEffort === undefined ? '' : `:${reasoningEffort}`}`)
-        current = { provider, model }
-      },
+      resolveAgent: async sessionId => ({ agent: agentOf(sessionId) }),
+      selectModel: async () => { throw new Error('the profile default must not be written for a Bot selection') },
     },
   }
   const rt = { ctx, state: { bots: {} }, chatOf: id => id, groupSessionsOf: () => [], save: async () => {}, warn: () => {} }
   install(rt)
-  return { rt, selected, saved, providers, listeners, current: () => current }
+  return { rt, selected, saved, providers, listeners, agentOf, projections, current: () => current }
 }
 
 test('the catalog is every model DSH serves, with no lab', async () => {
@@ -177,12 +205,36 @@ test('a greeting waits for the provider of its Bot model to register', async () 
 
 test('a Bot on the default model with its own thinking level leaves the default level as it was', async () => {
   const fallback = { provider: 'deepseek', model: 'v4-flash', reasoningEffort: 'high' }
-  const { rt, current } = bench({ fallback, reasoning: { 'deepseek/v4-flash': { reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'high' } } } })
-  rt.ctx.sessionController.selectModel = async ({ provider, model, reasoningEffort }) => {
-    const selected = { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) }
-    await rt.ctx.get('agentDefaultModel').saveSelection(selected)
-    return { selected }
-  }
+  const { rt, selected, saved, current } = bench({ fallback, reasoning: { 'deepseek/v4-flash': { reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'high' } } } })
   await rt.applyModel({ id: 'b1', model: 'deepseek/v4-flash', effort: 'low' })
+  assert.deepEqual(selected, ['b1:deepseek/v4-flash:low'])
+  assert.deepEqual(saved, [])
   assert.deepEqual(current(), fallback)
+})
+
+test('a Session\'s projected selection routes its live Agent\'s requests', async () => {
+  const { rt, agentOf, projections } = bench()
+  await rt.selectSessionModel('s1', { provider: 'stepfun', model: 'step-5' })
+  const agent = agentOf('s1')
+  assert.equal(agent.hooks.length, 1)
+  // The pending selection replaces the route, and clears an inherited level.
+  const request = agent.hooks[0]
+  const resolved = { provider: 'deepseek', model: 'v4-flash', reasoningEffort: 'low', temperature: 0.2 }
+  assert.deepEqual(await request({ agent }, async () => resolved), { provider: 'stepfun', model: 'step-5', temperature: 0.2 })
+  // Once a request used it, the last route holds until another selection lands.
+  projections.set('s1', { lastUsed: { provider: 'stepfun', model: 'step-5' }, pending: null })
+  assert.deepEqual(await request({ agent }, async () => resolved), { provider: 'stepfun', model: 'step-5', temperature: 0.2 })
+  // A Session without a selection keeps the route the machine would use.
+  projections.set('s1', { lastUsed: null, pending: null })
+  assert.deepEqual(await request({ agent }, async () => resolved), resolved)
+})
+
+test('a Bot whose model is not served falls back to the default, never to another Bot\'s model', async () => {
+  // #385: another Bot's model once landed in a Session — the only path was the
+  // profile default polluted by that Bot's own selection. It is never written now.
+  const { rt, selected, saved } = bench({ fallback: {} })
+  await rt.applyModel({ id: 'b2', model: 'stepfun/step-5' })
+  assert.deepEqual(saved, [])
+  await rt.applyModel({ id: 'b1', model: 'gone/model' })
+  assert.deepEqual(selected, ['b2:stepfun/step-5', 'b1:deepseek/v4-flash'])
 })

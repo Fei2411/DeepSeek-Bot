@@ -132,30 +132,38 @@ export function install(rt) {
     return resolveEffort(ref, wanted).catch(() => undefined)
   }
 
-  // DSH's selectModel also saves the selection as the profile default model, in the
-  // background. A Bot's model is its own, so the user's default is written back after
-  // it. Selections run one at a time and wait for the write-back: profile writes land in
-  // submission order, so the next one reads the user's default, not a Bot's.
-  let selecting = Promise.resolve()
-  function selectSessionModel(sessionId, { provider, model, reasoningEffort }) {
-    const run = selecting.then(async () => {
-      const defaults = ctx.get?.('agentDefaultModel')
-      const before = defaults?.currentSelection?.()
-      const result = await ctx.sessionController.selectModel({
-        sessionId, provider, model,
-        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-      })
-      const saved = result?.selected ?? { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) }
-      if (before?.provider && before?.model && !sameSelection(before, saved)) {
-        await defaults.saveSelection(before).catch(error => rt.warn('ds-bot: the default model was not restored: %s', error))
-      }
-      return result
-    })
-    selecting = run.catch(() => {})
-    return run
+  // A Bot's model stays on its own Sessions; it is never written as the profile
+  // default. `selectModel` would also save the selection there in the background,
+  // switching the user's own sessions, so it is not called. The selection is the
+  // Session's durable `model/selection` event instead, which a resumed Agent reads
+  // back as its pending selection. For the live Agent a prepended request hook
+  // applies the Session's projected selection — pending first, else the last route
+  // a request used — ahead of the Harness's own selection for that Agent.
+  const routed = new WeakSet()
+  function routeRequests(agent) {
+    if (routed.has(agent)) return
+    routed.add(agent)
+    agent.ctx?.on?.('agent/request', async ({ agent: running }, next) => {
+      const resolved = await next()
+      const state = ctx.get?.('sessionProjections')?.stateOf?.(running.session, 'modelSelection')
+      const selected = state?.pending ?? state?.lastUsed
+      if (selected === null || selected === undefined) return resolved
+      const { reasoningEffort: _inherited, ...route } = resolved
+      return { ...route, provider: selected.provider, model: selected.model, ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }) }
+    }, { prepend: true })
   }
 
-  const sameSelection = (a, b) => a.provider === b.provider && a.model === b.model && a.reasoningEffort === b.reasoningEffort
+  async function selectSessionModel(sessionId, { provider, model, reasoningEffort }) {
+    const resolved = await ctx.sessionController.resolveAgent(sessionId)
+    if (resolved?.agent === undefined) {
+      throw Object.assign(new Error(resolved?.error?.message ?? 'Session unavailable'), { code: resolved?.error?.code })
+    }
+    routeRequests(resolved.agent)
+    resolved.agent.session.append?.('model/selection', {
+      provider, model,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    })
+  }
 
   // `force` re-selects even when the record says it is applied: the composer's own
   // model picker can move the Session without telling this plugin.

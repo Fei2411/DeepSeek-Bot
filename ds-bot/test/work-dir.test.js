@@ -46,13 +46,20 @@ async function start({ services = {}, workspaces = [], llm, team: saved = TEAM, 
   const ctx = fakeContext({ services })
   const created = []
   const cwds = new Map()
+  const selections = []
   const agents = new Map()
   const agentOf = (sessionId) => {
     if (!agents.has(sessionId)) {
       const calls = []
       agents.set(sessionId, {
         id: sessionId,
-        session: { id: sessionId, header: { cwd: cwds.get(sessionId) ?? team }, requestHeader: () => undefined, deriveMessages: () => [] },
+        session: {
+          id: sessionId,
+          header: { cwd: cwds.get(sessionId) ?? team },
+          requestHeader: () => undefined,
+          deriveMessages: () => [],
+          append: (type, data) => { if (type === 'model/selection') selections.push([sessionId, data.model]) },
+        },
         calls,
         status: 'idle',
         followup(message) { calls.push(['followup', message]) },
@@ -123,7 +130,7 @@ async function start({ services = {}, workspaces = [], llm, team: saved = TEAM, 
   }
   // Loading once fills the Session-owner indexes.
   await tool('list_bots', {}, 'a')
-  return { ctx, root, dsh, home, team, project, created, agentOf, call, tool, preStep, state, workingIn, stop }
+  return { ctx, root, dsh, home, team, project, created, agentOf, call, tool, preStep, state, workingIn, selections, stop }
 }
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 20))
@@ -460,11 +467,9 @@ const MODELS = {
 }
 const onModel = (model, appliedModel = model) => ({ ...TEAM, bots: { ...TEAM.bots, b: { ...TEAM.bots.b, model, appliedModel } } })
 const recordSelections = (env) => {
-  const selected = []
-  env.ctx.sessionController.selectModel = async (request) => { selected.push([request.sessionId, request.model]) }
   // The earlier part's last request went to flash.
   env.agentOf('b').session.requestHeader = () => ({ config: { provider: 'deepseek', model: 'flash' } })
-  return selected
+  return env.selections
 }
 
 test('a fresh part runs on the Bot\'s model, not on the earlier part\'s last request', async (t) => {
@@ -478,16 +483,24 @@ test('a fresh part runs on the Bot\'s model, not on the earlier part\'s last req
 })
 
 test('a model the user picks while the fresh part is made reaches the fresh part', async (t) => {
-  const env = await start({ llm: MODELS, team: onModel('deepseek/flash') })
+  // The user switches models after the fresh part got the old one, before it is the
+  // Bot's. The pick still reaches the fresh part, and the earlier part got it first.
+  const team = onModel('deepseek/flash')
+  team.bots.b.permission = 'x'
+  const services = {}
+  const env = await start({ llm: MODELS, team, services })
   t.after(env.stop)
+  services.permissionPresets = { set() {} }
   const selected = recordSelections(env)
-  const select = env.ctx.sessionController.selectModel
-  env.ctx.sessionController.selectModel = async (request) => {
-    await select(request)
-    if (request.sessionId !== 's1' || selected.length > 1) return
-    // The user switches models after the fresh part got the old one, before it is the Bot's.
-    void env.call('update-bot', { id: 'b', model: 'deepseek/v4-pro' })
-    await until(() => env.state().bots.b.model === 'deepseek/v4-pro')
+  const resolve = env.ctx.sessionController.resolveAgent
+  let intercepted = false
+  env.ctx.sessionController.resolveAgent = async (sessionId) => {
+    if (sessionId === 's1' && !intercepted && selected.some(([id, model]) => id === 's1' && model === 'flash')) {
+      intercepted = true
+      void env.call('update-bot', { id: 'b', model: 'deepseek/v4-pro' })
+      await until(() => env.state().bots.b.model === 'deepseek/v4-pro')
+    }
+    return resolve(sessionId)
   }
   assert.equal((await env.call('update-bot', { id: 'b', workDir: env.project })).ok, true)
   await until(() => env.state().bots.b.sessionId === 's1')

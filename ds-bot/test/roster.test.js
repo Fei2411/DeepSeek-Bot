@@ -46,7 +46,13 @@ function start(team, { models = [], reasoning = {}, archiveError, selection } = 
     },
     sessionController: {
       create: async () => ({ sessionId: `s${++sessions}` }),
-      resolveAgent: async sessionId => ({ agent: { session: { id: sessionId }, followup: message => sent.push({ sessionId, message }) } }),
+      resolveAgent: async sessionId => ({
+        agent: {
+          session: { id: sessionId, append: (type, data) => { if (type === 'model/selection') selected.push({ sessionId, ...data }) } },
+          ctx: { on() {} },
+          followup: message => sent.push({ sessionId, message }),
+        },
+      }),
       selectModel: async (request) => { selected.push(request) },
     },
     sessionTitle: { rename: async () => {} },
